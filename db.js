@@ -1,9 +1,20 @@
 const mysql = require('mysql2/promise');
 
-const pool = mysql.createPool({
+/*const pool = mysql.createPool({
   host: 'localhost',
   user: 'root',
   password: '',
+  database: 'wecount',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});*/
+
+
+const pool = mysql.createPool({
+  host: 'mysql-34b2dc40-ala-ff3b.f.aivencloud.com',
+  user: 'avnadmin',
+  password: 'AVNS_FJeqAnK-TVYrzmalQn4',
   database: 'wecount',
   waitForConnections: true,
   connectionLimit: 10,
