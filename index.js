@@ -1,7 +1,7 @@
 const express = require('express');
 const app = express();
 const cors = require('cors');
-const db = require('./db');
+const mysql = require('mysql2');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
 const expenseRoutes = require('./routes/expenseRoutes');
@@ -41,11 +41,11 @@ app.use(session({
 
 // Session logging middleware
 app.use((req, res, next) => {
-  console.log('\n=== Session Information ===');
+ /* console.log('\n=== Session Information ===');
   console.log('Session ID:', req.sessionID);
   console.log('Session Data:', req.session);
   console.log('Cookie Settings:', req.session.cookie);
-  console.log('=========================\n');
+  console.log('=========================\n');*/
   next();
 });
 
@@ -60,15 +60,34 @@ const authenticateUser = (req, res, next) => {
 
 // Session logging middleware
 app.use((req, res, next) => {
-  console.log('\n=== Session Information ===');
+  /*console.log('\n=== Session Information ===');
   console.log('Session ID:', req.sessionID);
   console.log('Session Data:', req.session);
   console.log('Cookie Settings:', req.session.cookie);
-  console.log('=========================\n');
+  console.log('=========================\n');*/
   next();
 });
 
-// MySQL connection is now handled by db.js
+// MySQL connection configuration
+const db = mysql.createConnection({
+  host: 'mysql-34b2dc40-ala-ff3b.f.aivencloud.com',
+  user: 'avnadmin',
+  password: 'AVNS_FJeqAnK-TVYrzmalQn4',
+  database: 'wecount',
+  port: 21099,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+// Connect to MySQL
+db.connect((err) => {
+  if (err) {
+    console.error('Error connecting to MySQL:', err);
+    return;
+  }
+  console.log('Connected to MySQL database');
+});
 
 // Initialize routes
 app.use(routes(db));
@@ -329,7 +348,7 @@ app.get('/api/user-events', (req, res) => {
     }
     
     // Log query results
-    console.log('Query Results:', results);
+    //console.log('Query Results:', results);
     // Process the results to format participant data
     const formattedResults = results.map(event => ({
       ...event,

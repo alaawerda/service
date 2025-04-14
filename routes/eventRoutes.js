@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 // Fonction pour générer un code unique pour l'événement
-const generateUniqueEventCode = () => {
+const generateUniqueEventCode = (userId) => {
   const prefix = 'EV';
   const timestamp = Date.now().toString(36);
   const randomNum = Math.floor(Math.random() * 1000).toString(36);
@@ -20,7 +20,7 @@ router.post('/api/events', async (req, res) => {
     }
 
     // Générer un code unique pour l'événement
-    const eventCode = generateUniqueEventCode();
+    const eventCode = generateUniqueEventCode(userId);
 
     // Insérer l'événement
     const insertEventQuery = `
