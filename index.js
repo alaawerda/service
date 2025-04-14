@@ -1,7 +1,7 @@
 const express = require('express');
 const app = express();
 const cors = require('cors');
-const mysql = require('mysql2');
+const db = require('./db');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
 const expenseRoutes = require('./routes/expenseRoutes');
@@ -68,25 +68,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// MySQL connection configuration
-const db = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: '',
-  database: 'wecount',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
-
-// Connect to MySQL
-db.connect((err) => {
-  if (err) {
-    console.error('Error connecting to MySQL:', err);
-    return;
-  }
-  console.log('Connected to MySQL database');
-});
+// MySQL connection is now handled by db.js
 
 // Initialize routes
 app.use(routes(db));
