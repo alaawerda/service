@@ -25,7 +25,7 @@ app.use(cors({
 app.use('/api/expenses', expenseRoutes);
 
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'your-secret-key',
+  secret: 'your-secret-key',
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -41,11 +41,11 @@ app.use(session({
 
 // Session logging middleware
 app.use((req, res, next) => {
- /* console.log('\n=== Session Information ===');
+  console.log('\n=== Session Information ===');
   console.log('Session ID:', req.sessionID);
   console.log('Session Data:', req.session);
   console.log('Cookie Settings:', req.session.cookie);
-  console.log('=========================\n');*/
+  console.log('=========================\n');
   next();
 });
 
@@ -60,23 +60,23 @@ const authenticateUser = (req, res, next) => {
 
 // Session logging middleware
 app.use((req, res, next) => {
-  /*console.log('\n=== Session Information ===');
+  console.log('\n=== Session Information ===');
   console.log('Session ID:', req.sessionID);
   console.log('Session Data:', req.session);
   console.log('Cookie Settings:', req.session.cookie);
-  console.log('=========================\n');*/
+  console.log('=========================\n');
   next();
 });
 
 // MySQL connection configuration
 const db = mysql.createConnection({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'wecount',
+  host: 'localhost',
+  user: 'root',
+  password: '',
+  database: 'wecount',
   waitForConnections: true,
-  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 10,
-  queueLimit: parseInt(process.env.DB_QUEUE_LIMIT) || 0
+  connectionLimit: 10,
+  queueLimit: 0
 });
 
 // Connect to MySQL
@@ -347,7 +347,7 @@ app.get('/api/user-events', (req, res) => {
     }
     
     // Log query results
-    //console.log('Query Results:', results);
+    console.log('Query Results:', results);
     // Process the results to format participant data
     const formattedResults = results.map(event => ({
       ...event,
