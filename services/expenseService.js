@@ -18,7 +18,7 @@ class ExpenseService {
       connection = await db.beginTransaction();
 
       // Update expense details
-      await db.query(
+      await connection.execute(
         'UPDATE expenses SET description = ?, amount = ?, paid_by = ?, created_date = ?, split_type = ? WHERE id = ?',
         [description, amount, paid_by, formattedDate, split_type, expenseId]
       );
@@ -48,7 +48,7 @@ class ExpenseService {
         sql: 'SELECT GROUP_CONCAT( distinct participant_id )  FROM expense_participants WHERE expense_id = ?',
         params: [expenseId]
       });
-      const [rows] = await db.query(
+      const [rows] = await connection.execute(
         'SELECT GROUP_CONCAT( distinct participant_id ) as participant_ids FROM expense_participants WHERE expense_id = ?',
         [expenseId]
       );
@@ -67,7 +67,7 @@ class ExpenseService {
         });
        
           console.log('Mise à jour du participant:', participantId, 'à he_participates=0 et share_amount=0');
-          await db.query(
+          await connection.execute(
             'UPDATE expense_participants SET he_participates = 0, share_amount = 0 WHERE expense_id = ? AND participant_id = ?',
             [expenseId, participantId]
           );
@@ -89,12 +89,12 @@ class ExpenseService {
             split_type
           });
           if (exists) {
-            await db.query(
+            await connection.execute(
               'UPDATE expense_participants SET he_participates = 1, share_amount = ? WHERE expense_id = ? AND participant_id = ?',
               [shareAmount, expenseId, participantId]
             );
           } else {
-            await db.query(
+            await connection.execute(
               'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount) VALUES (?, ?, 1, ?)',
               [expenseId, participantId, shareAmount]
             );
@@ -108,12 +108,12 @@ class ExpenseService {
           const customAmount = expenseData.custom_amounts && expenseData.custom_amounts[participantId] || 0;
           const exists = existingParticipantIds.includes(participantId);
           if (exists) {
-            await db.query(
+            await connection.execute(
               'UPDATE expense_participants SET he_participates = 1, share_amount = ? WHERE expense_id = ? AND participant_id = ?',
               [customAmount, expenseId, participantId]
             );
           } else {
-            await db.query(
+            await connection.execute(
               'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount) VALUES (?, ?, 1, ?)',
               [expenseId, participantId, customAmount]
             );
@@ -134,12 +134,12 @@ class ExpenseService {
           const shareAmount = totalShares > 0 ? (amount * shares) / totalShares : 0;
           const exists = existingParticipantIds.includes(participantId);
           if (exists) {
-            await db.query(
+            await connection.execute(
               'UPDATE expense_participants SET he_participates = 1, share_amount = ? WHERE expense_id = ? AND participant_id = ?',
               [shareAmount, expenseId, participantId]
             );
           } else {
-            await db.query(
+            await connection.execute(
               'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount) VALUES (?, ?, 1, ?)',
               [expenseId, participantId, shareAmount]
             );

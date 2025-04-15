@@ -592,7 +592,7 @@ GROUP BY e.id;
                     db.query(
                       'INSERT INTO participants (event_id, name, user_id, custom_amount) VALUES (?, ?, ?, ?)',
                       [eventId, participant.name, participant.user_id || null, participant.custom_amount || null]
-                    )
+                    ).then(result => result)
                   );
                 }
 
@@ -604,7 +604,7 @@ GROUP BY e.id;
                       db.query(
                         'UPDATE participants SET name = ?, custom_amount = ? WHERE id = ?',
                         [participant.name, participant.custom_amount || null, participant.id]
-                      )
+                      ).then(result => result)
                     );
                   }
                 }
