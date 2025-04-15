@@ -15,10 +15,13 @@ class ExpenseService {
       // Start transaction
       connection = await db.beginTransaction();
 
+      // Format the date to YYYY-MM-DD format for MySQL DATE column
+      const formattedDate = created_date ? new Date(created_date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+      
       // Update expense details
       await db.query(
         'UPDATE expenses SET description = ?, amount = ?, paid_by = ?, created_date = ?, split_type = ? WHERE id = ?',
-        [description, amount, paid_by, created_date, split_type, expenseId]
+        [description, amount, paid_by, formattedDate, split_type, expenseId]
       );
 
       // Filtrer les participants sélectionnés et non sélectionnés
