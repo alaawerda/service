@@ -3,6 +3,8 @@ const db = require('../db');
 class ExpenseService {
   async updateExpense(expenseId, expenseData) {
     const { description, amount, event_id, paid_by, created_date, split_type, currency, participants } = expenseData;
+    // Format the date to MySQL compatible format (YYYY-MM-DD)
+    const formattedDate = new Date(created_date).toISOString().split('T')[0];
     let connection;
 
     try {
@@ -18,7 +20,7 @@ class ExpenseService {
       // Update expense details
       await db.query(
         'UPDATE expenses SET description = ?, amount = ?, paid_by = ?, created_date = ?, split_type = ? WHERE id = ?',
-        [description, amount, paid_by, created_date, split_type, expenseId]
+        [description, amount, paid_by, formattedDate, split_type, expenseId]
       );
 
       // Filtrer les participants sélectionnés et non sélectionnés

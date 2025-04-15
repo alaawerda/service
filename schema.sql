@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS expenses (
   split_type ENUM('equal', 'custom', 'shares') NOT NULL,
   receipt_image TEXT,
   currency TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP DEFAULT current_timestamp(),
   FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
 );
 
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS expense_participants (
   expense_id INT NOT NULL,
   participant_id VARCHAR(255) NOT NULL,
   share_amount DECIMAL(10, 2) NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP DEFAULT current_timestamp(),
   he_participates BOOLEAN DEFAULT TRUE,
   FOREIGN KEY (expense_id) REFERENCES expenses(id) ON DELETE CASCADE,
   FOREIGN KEY (participant_id) REFERENCES particiapnts(id) ON DELETE CASCADE

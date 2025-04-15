@@ -412,9 +412,12 @@ app.post('/api/expenses', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Format the date to MySQL compatible format (YYYY-MM-DD)
+    const formattedDate = new Date(createdDate).toISOString().split('T')[0];
+
     // Insert expense
     const expenseQuery = 'INSERT INTO expenses (description, amount, event_id, paid_by, created_date, split_type, receipt_image) VALUES (?, ?, ?, ?, ?, ?, ?)';
-    db.query(expenseQuery, [description, amount, groupId, paidBy, createdDate, split_type, receiptImage], (err, result) => {
+    db.query(expenseQuery, [description, amount, groupId, paidBy, formattedDate, split_type, receiptImage], (err, result) => {
       if (err) {
         console.error('Error creating expense:', err);
         return res.status(500).json({ error: 'Error creating expense' });
