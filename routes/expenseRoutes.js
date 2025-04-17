@@ -42,7 +42,16 @@ router.put('/:id', async (req, res) => { // Correct route path
 
     // For custom split type, validate custom amounts
     if (expenseData.split_type === 'custom') {
+      // Ensure custom_amounts exists and is an object
+      if (!expenseData.custom_amounts || typeof expenseData.custom_amounts !== 'object') {
+        console.log('[Update Expense] Validation failed: Missing or invalid custom_amounts for custom split type');
+        return res.status(400).json({ 
+          error: 'Custom amounts data is missing or invalid for custom split type.' 
+        });
+      }
+
       const totalCustomAmount = selectedParticipants.reduce((sum, p) => {
+        // Safely access custom amount, default to 0 if not found or invalid
         const amount = parseFloat(expenseData.custom_amounts[p.id]) || 0;
         return sum + amount;
       }, 0);
@@ -59,6 +68,39 @@ router.put('/:id', async (req, res) => { // Correct route path
           error: 'Sum of custom amounts must equal the total expense amount' 
         });
       }
+    }
+
+    // For shares split type, validate shares data
+    else if (expenseData.split_type === 'shares') {
+      // Ensure shares exists and is an object
+      if (!expenseData.shares || typeof expenseData.shares !== 'object') {
+        console.log('[Update Expense] Validation failed: Missing or invalid shares data for shares split type');
+        return res.status(400).json({ 
+          error: 'Shares data is missing or invalid for shares split type.' 
+        });
+      }
+
+      // Validate that shares are positive numbers and at least one share exists
+      let totalShares = 0;
+      let validShares = true;
+      selectedParticipants.forEach(p => {
+        const share = parseFloat(expenseData.shares[p.id]) || 0;
+        if (share < 0) {
+          validShares = false;
+        }
+        totalShares += share;
+      });
+
+      if (!validShares) {
+        console.log('[Update Expense] Validation failed: Shares must be non-negative numbers');
+        return res.status(400).json({ error: 'Shares must be non-negative numbers.' });
+      }
+
+      if (totalShares <= 0) {
+        console.log('[Update Expense] Validation failed: Total shares must be positive');
+        return res.status(400).json({ error: 'Total shares must be positive for shares split type.' });
+      }
+      console.log('[Update Expense] Shares split validation passed:', { totalShares });
     }
 
     console.log('[Update Expense] Calling expense service to update expense...');

@@ -28,47 +28,26 @@ router.post('/api/events', async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?)
     `;
 
-    db.query(
-      insertEventQuery,
-      [name, startDate, endDate, currency, userId, eventCode],
-      async (err, result) => {
-        if (err) {
-          console.error('Erreur de base de données:', err);
-          return res.status(500).json({ error: 'Erreur de base de données' });
-        }
+    try {
+      const result = await db.query(insertEventQuery, [name, startDate, endDate, currency, userId, eventCode]);
+      const eventId = result.insertId;
 
-        const eventId = result.insertId;
+      // Ajouter les participants
+      const insertParticipantQuery = 'INSERT INTO participants (event_id, name, user_id) VALUES (?, ?, ?)';
+      const participantPromises = participants.map(participant =>
+        db.query(insertParticipantQuery, [eventId, participant.name, participant.id || null])
+      );
 
-        // Ajouter les participants
-        const participantPromises = participants.map(
-          participant =>
-            new Promise((resolve, reject) => {
-              const insertParticipantQuery =
-                'INSERT INTO participants (event_id, name, user_id) VALUES (?, ?, ?)';
-              db.query(
-                insertParticipantQuery,
-                [eventId, participant.name, participant.id || null],
-                (err) => {
-                  if (err) reject(err);
-                  else resolve();
-                }
-              );
-            })
-        );
-
-        try {
-          await Promise.all(participantPromises);
-          res.json({
-            id: eventId,
-            code: eventCode,
-            message: 'Événement créé avec succès'
-          });
-        } catch (error) {
-          console.error('Erreur lors de l\'ajout des participants:', error);
-          res.status(500).json({ error: 'Échec de l\'ajout des participants' });
-        }
-      }
-    );
+      await Promise.all(participantPromises);
+      res.json({
+        id: eventId,
+        code: eventCode,
+        message: 'Événement créé avec succès'
+      });
+    } catch (error) {
+      console.error('Erreur lors de la création de l\'événement:', error);
+      res.status(500).json({ error: 'Erreur lors de la création de l\'événement' });
+    }
   } catch (error) {
     console.error('Erreur serveur:', error);
     res.status(500).json({ error: 'Erreur serveur' });

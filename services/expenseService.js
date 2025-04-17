@@ -15,13 +15,10 @@ class ExpenseService {
       // Start transaction
       connection = await db.beginTransaction();
 
-      // Format the date to YYYY-MM-DD format for MySQL DATE column
-      const formattedDate = created_date ? new Date(created_date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-      
       // Update expense details
       await db.query(
         'UPDATE expenses SET description = ?, amount = ?, paid_by = ?, created_date = ?, split_type = ? WHERE id = ?',
-        [description, amount, paid_by, formattedDate, split_type, expenseId]
+        [description, amount, paid_by, created_date, split_type, expenseId]
       );
 
       // Filtrer les participants sélectionnés et non sélectionnés
@@ -29,16 +26,8 @@ class ExpenseService {
         total: participants.length,
         participants: participants.map(p => ({ id: p.id || p.participant_id, selected: p.selected, he_participates: p.he_participates }))
       });
-      const selectedParticipants = participants.filter(p => {
-        const isSelected = p.selected || p.he_participates === 1;
-        const hasValidId = !!(p.id || p.participant_id);
-        return isSelected && hasValidId;
-      });
-      const notSelectedParticipants = participants.filter(p => {
-        const isNotSelected = !p.selected && p.he_participates !== 1;
-        const hasValidId = !!(p.id || p.participant_id);
-        return isNotSelected && hasValidId;
-      });
+      const selectedParticipants = participants.filter(p => p.selected || p.he_participates === 1);
+      const notSelectedParticipants = participants.filter(p => !p.selected && p.he_participates !== 1);
       console.log('Résultat du filtrage:', {
         selectedParticipants: selectedParticipants.map(p => ({ id: p.id || p.participant_id, selected: p.selected, he_participates: p.he_participates })),
         notSelectedParticipants: notSelectedParticipants.map(p => ({ id: p.id || p.participant_id, selected: p.selected, he_participates: p.he_participates }))

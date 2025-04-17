@@ -207,4 +207,5 @@ class BalanceService {
   }
 }
 
+// Exporter une instance de BalanceService au lieu de la classe
 module.exports = new BalanceService();
