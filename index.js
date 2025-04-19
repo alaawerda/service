@@ -1,7 +1,6 @@
 const express = require('express');
 const app = express();
 const cors = require('cors');
-const mysql = require('mysql2/promise');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
 const expenseRoutes = require('./routes/expenseRoutes');
@@ -222,7 +221,7 @@ app.post('/api/login', async (req, res) => {
 
 // Register endpoint
 // User session verification endpoint
-/*app.get('/api/user', (req, res) => {
+app.get('/api/user', (req, res) => {
   if (!req.session.user) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
@@ -232,7 +231,6 @@ app.post('/api/login', async (req, res) => {
     username: req.session.user.username
   });
 });
-*/
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, username } = req.body;
