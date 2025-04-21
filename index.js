@@ -5,7 +5,8 @@ const bcrypt = require('bcrypt');
 const session = require('express-session');
 const expenseRoutes = require('./routes/expenseRoutes');
 const eventRoutes = require('./routes/eventRoutes');
-const routes = require('./routes');
+const db = require('./db');
+const routes = require('./routes')(db);
 
 const port = 8081;
 
@@ -22,6 +23,12 @@ app.use(cors({
 }));
 
 app.use('/api/expenses', expenseRoutes);
+
+// Log database connection
+console.log('MySQL pool created and ready for connections');
+
+// Initialize routes
+app.use(routes);
 
 app.use(session({
   secret: 'your-secret-key',
@@ -66,15 +73,6 @@ app.use((req, res, next) => {
   console.log('=========================\n');*/
   next();
 });
-
-// MySQL connection configuration
-const db = require('./db');
-
-// Log database connection
-console.log('MySQL pool created and ready for connections');
-
-// Initialize routes
-app.use(routes(db));
 
 // Get user data endpoint
 app.get('/api/user-data', async (req, res) => {
@@ -293,7 +291,7 @@ app.get('/api/user-events', async (req, res) => {
       LEFT JOIN participants p ON e.id = p.event_id
       LEFT JOIN expenses ex ON e.id = ex.event_id  -- Join with expenses table
       WHERE e.created_by = ? 
-        OR EXISTS (SELECT 1 FROM participants p2 WHERE p2.event_id = e.id AND p2.name = (SELECT username FROM users WHERE id = ?))
+        OR p.user_id = ? 
       GROUP BY e.id
       ORDER BY e.created_at DESC
     `;

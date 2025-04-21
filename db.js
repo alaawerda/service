@@ -2,6 +2,15 @@ const mysql = require('mysql2/promise');
 require('dotenv').config();
 
 
+/*nst pool = mysql.createPool({
+host: process.env.DB_HOST || 'localhost',
+user: process.env.DB_USER || 'root',
+password: process.env.DB_PASSWORD || '',
+database: process.env.DB_NAME || 'wecount',
+port: process.env.DB_PORT || 3306,
+waitForConnections: true
+});*/
+
 const pool = mysql.createPool({
 host: process.env.DB_HOST || 'localhost',
 user: process.env.DB_USER || 'root',
@@ -16,6 +25,7 @@ connectionLimit: 10,
 queueLimit: 0,
 connectTimeout: 60000
 });
+
 
 /*console.log(process.env.DB_HOST);
 const pool = mysql.createPool({

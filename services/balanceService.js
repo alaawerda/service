@@ -90,6 +90,26 @@ class BalanceService {
   }
 
   /**
+   * Récupère tous les participants d'un événement à partir du code événement
+   * @param {string} eventCode - Code de l'événement
+   * @returns {Array} Liste des participants
+   */
+  async getEventParticipantsByCode(eventCode) {
+    try {
+      const eventQuery = `SELECT id FROM events WHERE code = ?`;
+      const events = await db.query(eventQuery, [eventCode]);
+      if (!events || events.length === 0) {
+        throw new Error('Event not found');
+      }
+      const eventId = events[0].id;
+      return await this.getEventParticipants(eventId);
+    } catch (error) {
+      console.error('Erreur lors de la récupération des participants par code:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Calcule les dettes entre participants
    * @param {Array} expenses - Liste des dépenses
    * @param {Array} participants - Liste des participants

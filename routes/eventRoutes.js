@@ -1,4 +1,6 @@
 const express = require('express');
+
+module.exports = (db) => {
 const router = express.Router();
 
 // Fonction pour générer un code unique pour l'événement
@@ -54,4 +56,17 @@ router.post('/api/events', async (req, res) => {
   }
 });
 
-module.exports = router;
+// Récupérer les participants d'un événement par code
+router.get('/api/events/by-code/:eventCode/participants', async (req, res) => {
+  try {
+    const { eventCode } = req.params;
+    const balanceService = require('../services/balanceService');
+    const participants = await db.query(`SELECT * FROM participants WHERE event_id = (SELECT id FROM events WHERE code = ?)`, [eventCode]);
+    res.json(participants);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des participants par code:', error);
+    res.status(404).json({ error: "Événement introuvable ou erreur serveur" });
+  }
+});
+return router;
+};

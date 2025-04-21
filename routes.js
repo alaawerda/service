@@ -20,6 +20,63 @@ const getDefaultBalances = () => {
 };
 
 module.exports = (db) => {
+
+// API pour rejoindre un événement par code et lier un participant à l'utilisateur connecté
+router.post('/api/join-event', async (req, res) => {
+  try {
+    const { userId, participantId } = req.body;
+    if (!userId || !participantId) {
+      return res.status(400).json({ error: 'Code et utilisateur requis' });
+    }
+    // Vérifier si le participant est déjà lié à un utilisateur
+    const participantRows = await db.query('SELECT user_id, event_id FROM participants WHERE id = ?', [participantId]);
+    if (!participantRows || participantRows.length === 0) {
+      return res.status(404).json({ error: 'Participant introuvable' });
+    }
+    // Vérifier si ce user participe déjà à cet event
+    const eventId = participantRows[0].event_id;
+    const alreadyParticipant = await db.query('SELECT id FROM participants WHERE event_id = ? AND user_id = ?', [eventId, userId]);
+    if (alreadyParticipant && alreadyParticipant.length > 0) {
+      return res.status(409).json({ error: 'Vous participez déjà à cet événement.' });
+    }
+    if (participantRows[0].user_id) {
+      return res.status(409).json({ error: 'Ce participant est déjà lié à un utilisateur.' });
+    }
+    // Fetch the username for the given userId
+    const userRows = await db.query('SELECT username FROM users WHERE id = ?', [userId]);
+    if (!userRows || userRows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur introuvable' });
+    }
+    const username = userRows[0].username;
+    // Update the participant with the user_id and username
+    await db.query('UPDATE participants SET user_id = ?, name = ? WHERE id = ?', [userId, username, participantId]);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Erreur join-event:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+  // Nouvelle route : récupérer les participants d'un événement par code
+  router.get('/api/events/by-code/:eventCode/participants', async (req, res) => {
+    try {
+      const { eventCode } = req.params;
+  
+      //const eventResults = await db.query(eventQuery, [eventCode]);
+      const eventResults = await db.query('SELECT* FROM events WHERE code = ?', [eventCode]);
+
+      if (!eventResults || eventResults.length === 0) {
+        return res.status(404).json({ error: "Événement introuvable" });
+      }
+      const eventId = eventResults[0].id;
+      const eventName = eventResults[0].name;
+      const participantsQuery = 'SELECT id, name, user_id FROM participants WHERE event_id = ?';
+      const participants = await db.query(participantsQuery, [eventId]);
+      res.json({ eventName, participants });
+    } catch (error) {
+      console.error("Erreur lors de la récupération des participants par code:", error);
+      res.status(500).json({ error: "Erreur serveur lors de la récupération des participants" });
+    }
+  });
   // Get event details by ID
   router.get('/api/events/:eventId', async (req, res) => {
     try {
@@ -599,3 +656,6 @@ res.json({
 
   return router;
 };
+
+
+
