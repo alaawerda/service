@@ -52,9 +52,13 @@ CREATE TABLE events (
 CREATE TABLE `users` (
   id int(11) NOT NULL,
   username varchar(255) NOT NULL,
-  password varchar(255) NOT NULL,
+  password varchar(255) DEFAULT NULL,
   email varchar(255) NOT NULL,
-  created_at timestamp NOT NULL DEFAULT current_timestamp()
+  created_at timestamp NOT NULL DEFAULT current_timestamp(),
+  google_id varchar(255) DEFAULT NULL,
+  google_token varchar(255) DEFAULT NULL,
+  profile_picture varchar(255) DEFAULT NULL,
+  auth_provider ENUM('local', 'google') DEFAULT 'local'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Add indexes for better query performance

@@ -7,6 +7,11 @@ const expenseRoutes = require('./routes/expenseRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 const db = require('./db');
 const routes = require('./routes')(db);
+const authRoutes = require('./routes/authRoutes')(db);
+
+// Configuration des variables d'environnement pour Google OAuth
+process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || 'VOTRE_GOOGLE_CLIENT_ID';
+process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || 'VOTRE_GOOGLE_CLIENT_SECRET';
 
 const port = 8081;
 
@@ -29,6 +34,7 @@ console.log('MySQL pool created and ready for connections');
 
 // Initialize routes
 app.use(routes);
+app.use(authRoutes);
 
 app.use(session({
   secret: 'your-secret-key',
@@ -281,22 +287,40 @@ app.get('/api/user-events', async (req, res) => {
     if (!userId) {
       return res.status(400).json({ error: 'User ID is required' });
     }
+    
+    // D'abord, récupérer les IDs des événements auxquels l'utilisateur participe
+    const eventIdsQuery = `
+      SELECT DISTINCT e.id
+      FROM events e
+      LEFT JOIN participants p ON e.id = p.event_id
+      WHERE e.created_by = ? OR p.user_id = ?
+    `;
+    
+    const eventIdsResults = await db.query(eventIdsQuery, [userId, userId]);
+    
+    if (!eventIdsResults || eventIdsResults.length === 0) {
+      return res.json([]);
+    }
+    
+    // Extraire les IDs des événements
+    const eventIds = eventIdsResults.map(row => row.id);
+    
+    // Ensuite, récupérer tous les détails des événements avec tous leurs participants
     const query = `
       SELECT DISTINCT e.*, 
         GROUP_CONCAT(DISTINCT p.name) as participant_names,
         GROUP_CONCAT(DISTINCT p.custom_amount) as participant_amounts,
-        COUNT( DISTINCT ex.id) as expenseCount,  -- Count of expenses
+        COUNT(DISTINCT ex.id) as expenseCount,  -- Count of expenses
         COALESCE(SUM(ex.amount) / NULLIF(COUNT(DISTINCT p.id), 0), 0) as totalExpenseAmount  -- Sum of expense amounts
       FROM events e
       LEFT JOIN participants p ON e.id = p.event_id
       LEFT JOIN expenses ex ON e.id = ex.event_id  -- Join with expenses table
-      WHERE e.created_by = ? 
-        OR p.user_id = ? 
+      WHERE e.id IN (${eventIds.map(() => '?').join(',')})
       GROUP BY e.id
       ORDER BY e.created_at DESC
     `;
 
-    const results = await db.query(query, [userId, userId]);
+    const results = await db.query(query, [...eventIds]);
     
     // Process the results to format participant data
     const formattedResults = results.map(event => ({
