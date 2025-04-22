@@ -18,9 +18,9 @@ password: process.env.DB_PASSWORD || '',
 database: process.env.DB_NAME || 'wecount',
 port: process.env.DB_PORT || 3306,
 waitForConnections: true,
-ssl: {
-  rejectUnauthorized: true  // Allow self-signed certificates
-},
+ssl: process.env.DB_HOST && process.env.DB_HOST.includes('aivencloud') ? {
+  rejectUnauthorized: false  // Allow self-signed certificates
+} : false,
 connectionLimit: 10,
 queueLimit: 0,
 connectTimeout: 60000
