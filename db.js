@@ -11,7 +11,7 @@ port: process.env.DB_PORT || 3306,
 waitForConnections: true
 });*/
 
-const pool = mysql.createPool({
+/*const pool = mysql.createPool({
 host: process.env.DB_HOST || 'localhost',
 user: process.env.DB_USER || 'root',
 password: process.env.DB_PASSWORD || '',
@@ -24,10 +24,10 @@ ssl: process.env.DB_HOST && process.env.DB_HOST.includes('aivencloud') ? {
 connectionLimit: 10,
 queueLimit: 0,
 connectTimeout: 60000
-});
+});*/
 
 
-/*console.log(process.env.DB_HOST);
+console.log(process.env.DB_HOST);
 const pool = mysql.createPool({
   host: 'mysql-34b2dc40-ala-ff3b.f.aivencloud.com',
   user: 'avnadmin',
@@ -41,7 +41,7 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0,
   connectTimeout: 60000
-});*/
+});
 
 
 
