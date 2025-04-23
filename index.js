@@ -17,12 +17,16 @@ const port = 8081;
 
 app.use(express.json());
 
+// Remplacer la configuration CORS actuelle
 app.use(cors({
-  origin: ['http://localhost:8081', 'http://localhost:19006', 'http://localhost:19000', 'http://localhost:19001', 'http://localhost:19002'],
+  origin: function(origin, callback) {
+    // Permet à toutes les origines d'accéder à l'API
+    callback(null, true);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Cookie', 'Access-Control-Allow-Origin'],
-  exposedHeaders: ['Set-Cookie'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Cookie', 'Access-Control-Allow-Origin', 'X-Requested-With', 'Content-Length', 'X-Json'],
+  exposedHeaders: ['Set-Cookie', 'X-Json', 'Content-Type'],
   preflightContinue: true,
   optionsSuccessStatus: 200
 }));
@@ -181,10 +185,14 @@ app.post('/api/events', async (req, res) => {
 // Login endpoint
 app.post('/api/login', async (req, res) => {
   try {
+    console.log('[LOGIN] Requête reçue sur /api/login');
+    console.log('[LOGIN] Headers:', req.headers);
+    console.log('[LOGIN] Body:', req.body);
     const { email, password } = req.body;
 
     // Validate input
     if (!email || !password) {
+      console.log('[LOGIN] Validation échouée: email ou mot de passe manquant');
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
@@ -192,8 +200,9 @@ app.post('/api/login', async (req, res) => {
     const query = 'SELECT * FROM users WHERE email = ?';
     try {
       const rows = await db.query(query, [email]);
-      
+      console.log('[LOGIN] Résultat de la requête utilisateur:', rows);
       if (!rows || rows.length === 0) {
+        console.log('[LOGIN] Aucun utilisateur trouvé pour cet email');
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
