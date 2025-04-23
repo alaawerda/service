@@ -1,6 +1,5 @@
 const express = require('express');
 const app = express();
-const cors = require('cors');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
 const expenseRoutes = require('./routes/expenseRoutes');
@@ -9,23 +8,23 @@ const db = require('./db');
 const routes = require('./routes')(db);
 const authRoutes = require('./routes/authRoutes')(db);
 
+// Import our custom CORS middleware
+const { corsMiddleware, additionalCorsHeaders, optionsCorsHandler } = require('./middleware/corsMiddleware');
+
 // Configuration des variables d'environnement pour Google OAuth
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || 'VOTRE_GOOGLE_CLIENT_ID';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || 'VOTRE_GOOGLE_CLIENT_SECRET';
 
 const port = 8081;
 
-// CORS middleware should come before other middleware to ensure headers are set correctly
-app.use(cors({
-  origin: '*', // Allow all origins
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Cookie', 'Access-Control-Allow-Origin', 'X-Requested-With', 'Content-Length', 'X-Json'],
-  exposedHeaders: ['Set-Cookie', 'X-Json', 'Content-Type']
-}));
+// Apply CORS middleware (should come before other middleware)
+app.use(corsMiddleware);
 
-// Add explicit handling for OPTIONS requests
-app.options('*', cors());
+// Handle preflight OPTIONS requests
+app.options('*', optionsCorsHandler);
+
+// Apply additional CORS headers to all responses
+app.use(additionalCorsHeaders);
 
 // Parse JSON bodies (must come after CORS)
 app.use(express.json());
