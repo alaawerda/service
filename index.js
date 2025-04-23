@@ -15,21 +15,20 @@ process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || 'VOTRE_GO
 
 const port = 8081;
 
-app.use(express.json());
-
-// Remplacer la configuration CORS actuelle
+// CORS middleware should come before other middleware to ensure headers are set correctly
 app.use(cors({
-  origin: function(origin, callback) {
-    // Permet à toutes les origines d'accéder à l'API
-    callback(null, true);
-  },
+  origin: '*', // Allow all origins
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Cookie', 'Access-Control-Allow-Origin', 'X-Requested-With', 'Content-Length', 'X-Json'],
-  exposedHeaders: ['Set-Cookie', 'X-Json', 'Content-Type'],
-  preflightContinue: true,
-  optionsSuccessStatus: 200
+  exposedHeaders: ['Set-Cookie', 'X-Json', 'Content-Type']
 }));
+
+// Add explicit handling for OPTIONS requests
+app.options('*', cors());
+
+// Parse JSON bodies (must come after CORS)
+app.use(express.json());
 
 app.use('/api/expenses', expenseRoutes);
 
