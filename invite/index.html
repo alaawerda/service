@@ -50,9 +50,9 @@
             <h1>WeCount</h1>
         </div>
         <h2>Ouvrir l'application WeCount</h2>
-        <p>Cliquez sur le bouton ci-dessous pour accéder à l'application WeCount</p>
+        <p>Cliquez sur le bouton ci-dessous pour rejoindre l'événement</p>
         
-        <a href="wecount://events" class="btn" id="openApp">Ouvrir WeCount</a>
+        <a href="#" class="btn" id="openApp">Rejoindre l'événement</a>
         
         <div class="fallback">
             <p>Si l'application ne s'ouvre pas automatiquement, veuillez vérifier que vous avez bien installé WeCount sur votre appareil.</p>
@@ -61,14 +61,51 @@
     </div>
 
     <script>
-        // Détection du système d'exploitation pour afficher le lien vers le store approprié
+        // Fonction pour extraire le code d'événement du chemin de l'URL
+        function getEventCodeFromPath() {
+            var path = window.location.pathname;
+            var pathParts = path.split('/');
+            
+            // Le code devrait être la dernière partie du chemin après /invite/
+            var eventCode = pathParts[pathParts.length - 1];
+            
+            // Si le chemin se termine par un slash ou est vide, utiliser l'avant-dernier segment
+            if (!eventCode && pathParts.length > 2) {
+                eventCode = pathParts[pathParts.length - 2];
+            }
+            
+            return eventCode;
+        }
+        
         document.addEventListener('DOMContentLoaded', function() {
             var userAgent = navigator.userAgent || navigator.vendor || window.opera;
             var storeLink = document.getElementById('storeLink');
+            var openAppBtn = document.getElementById('openApp');
+            
+            // Récupérer le code d'événement du chemin de l'URL
+            var eventCode = getEventCodeFromPath();
+            console.log('Code événement détecté:', eventCode);
+            
+            // Construire l'URL du deep link avec le code
+            var deepLinkUrl = 'wecount://events/invite/' + eventCode;
+            console.log('Deep link URL:', deepLinkUrl);
+            
+            // Configurer le bouton pour ouvrir le deep link
+            openAppBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = deepLinkUrl;
+            });
+            
+            // Message sous le bouton montrant le code
+            if (eventCode) {
+                var codeDisplay = document.createElement('p');
+                codeDisplay.innerHTML = 'Code de l\'événement : <strong>' + eventCode + '</strong>';
+                openAppBtn.parentNode.insertBefore(codeDisplay, openAppBtn.nextSibling);
+            }
             
             // Tentative automatique d'ouverture de l'application
             setTimeout(function() {
-                window.location.href = "wecount://events";
+                window.location.href = deepLinkUrl;
             }, 100);
 
             // Lien vers le store approprié
