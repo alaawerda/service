@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redirection vers WeCount</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .logo {
+            margin-bottom: 20px;
+        }
+        .btn {
+            display: inline-block;
+            background-color: #4285f4;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-weight: bold;
+            margin-top: 20px;
+            transition: background-color 0.3s;
+        }
+        .btn:hover {
+            background-color: #3367d6;
+        }
+        .fallback {
+            margin-top: 30px;
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>WeCount</h1>
+        </div>
+        <h2>Ouvrir l'application WeCount</h2>
+        <p>Cliquez sur le bouton ci-dessous pour accéder à l'application WeCount</p>
+        
+        <a href="wecount://events" class="btn" id="openApp">Ouvrir WeCount</a>
+        
+        <div class="fallback">
+            <p>Si l'application ne s'ouvre pas automatiquement, veuillez vérifier que vous avez bien installé WeCount sur votre appareil.</p>
+            <p id="storeLink"></p>
+        </div>
+    </div>
+
+    <script>
+        // Détection du système d'exploitation pour afficher le lien vers le store approprié
+        document.addEventListener('DOMContentLoaded', function() {
+            var userAgent = navigator.userAgent || navigator.vendor || window.opera;
+            var storeLink = document.getElementById('storeLink');
+            
+            // Tentative automatique d'ouverture de l'application
+            setTimeout(function() {
+                window.location.href = "wecount://events";
+            }, 100);
+
+            // Lien vers le store approprié
+            if (/android/i.test(userAgent)) {
+                storeLink.innerHTML = 'Vous pouvez <a href="https://play.google.com/store/apps/details?id=com.werdaalaa.test">télécharger l\'application sur Google Play</a>';
+            } else if (/iPad|iPhone|iPod/.test(userAgent) && !window.MSStream) {
+                storeLink.innerHTML = 'Vous pouvez <a href="#">télécharger l\'application sur l\'App Store</a>';
+            }
+        });
+    </script>
+</body>
+</html>
