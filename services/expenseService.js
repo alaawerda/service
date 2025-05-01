@@ -3,6 +3,15 @@ const db = require('../db');
 class ExpenseService {
   async updateExpense(expenseId, expenseData) {
     const { description, amount, event_id, paid_by, created_date, split_type, currency, participants } = expenseData;
+    // Ensure created_date is in YYYY-MM-DD format for MySQL DATE type
+    let formattedCreatedDate = created_date;
+    if (created_date) {
+      // Handles both Date objects and ISO strings
+      const dateObj = (created_date instanceof Date) ? created_date : new Date(created_date);
+      if (!isNaN(dateObj)) {
+        formattedCreatedDate = dateObj.toISOString().slice(0, 10); // YYYY-MM-DD
+      }
+    }
     let connection;
 
     try {
@@ -18,66 +27,74 @@ class ExpenseService {
       // Update expense details
       await db.query(
         'UPDATE expenses SET description = ?, amount = ?, paid_by = ?, created_date = ?, split_type = ? WHERE id = ?',
-        [description, amount, paid_by, created_date, split_type, expenseId]
+        [description, amount, paid_by, formattedCreatedDate, split_type, expenseId]
       );
+
+      // Normaliser les données des participants pour assurer la cohérence
+      const normalizedParticipants = participants.map(p => ({
+        id: p.id || p.participant_id,
+        name: p.name,
+        selected: p.selected === true || p.he_participates === 1 || p.he_participates === true
+      }));
 
       // Filtrer les participants sélectionnés et non sélectionnés
       console.log('Filtrage des participants:', {
-        total: participants.length,
-        participants: participants.map(p => ({ id: p.id || p.participant_id, selected: p.selected, he_participates: p.he_participates }))
+        total: normalizedParticipants.length,
+        participants: normalizedParticipants.map(p => ({ id: p.id, selected: p.selected }))
       });
-      const selectedParticipants = participants.filter(p => p.selected || p.he_participates === 1);
-      const notSelectedParticipants = participants.filter(p => !p.selected && p.he_participates !== 1);
+      
+      const selectedParticipants = normalizedParticipants.filter(p => p.selected);
+      const notSelectedParticipants = normalizedParticipants.filter(p => !p.selected);
+      
       console.log('Résultat du filtrage:', {
-        selectedParticipants: selectedParticipants.map(p => ({ id: p.id || p.participant_id, selected: p.selected, he_participates: p.he_participates })),
-        notSelectedParticipants: notSelectedParticipants.map(p => ({ id: p.id || p.participant_id, selected: p.selected, he_participates: p.he_participates }))
+        selectedCount: selectedParticipants.length,
+        notSelectedCount: notSelectedParticipants.length
       });
 
       // Obtenir les IDs des participants existants
-      console.log('Executing query for existing participants:', {
-        sql: 'SELECT GROUP_CONCAT( distinct participant_id )  FROM expense_participants WHERE expense_id = ?',
-        params: [expenseId]
-      });
       const [rows] = await db.query(
-        'SELECT GROUP_CONCAT( distinct participant_id ) as participant_ids FROM expense_participants WHERE expense_id = ?',
+        'SELECT GROUP_CONCAT(distinct participant_id) as participant_ids FROM expense_participants WHERE expense_id = ?',
         [expenseId]
       );
-      console.log('Raw existing participants data:', rows);
+      
       // Extraire et convertir les IDs de participants de la chaîne concaténée
       const existingParticipantIds = rows.participant_ids ? rows.participant_ids.split(',') : [];
-      console.log('Raw existing participants data existingParticipantIds:', existingParticipantIds);
+      console.log('Participants existants:', existingParticipantIds);
 
       // Mettre à jour les participants non sélectionnés existants
       for (const participant of notSelectedParticipants) {
-        const participantId = participant.id || participant.participant_id;
-        console.log('Participant non sélectionné:', {
-          participantId,
-          exists: participantId && existingParticipantIds.includes(participantId),
-          participant
-        });
-       
-          console.log('Mise à jour du participant:', participantId, 'à he_participates=0 et share_amount=0');
+        const participantId = participant.id;
+        if (!participantId) continue;
+        
+        const exists = existingParticipantIds.includes(participantId.toString());
+        
+        if (exists) {
+          console.log(`Mise à jour du participant ${participantId} à he_participates=0`);
           await db.query(
             'UPDATE expense_participants SET he_participates = 0, share_amount = 0 WHERE expense_id = ? AND participant_id = ?',
             [expenseId, participantId]
           );
-        
+        } else {
+          console.log(`Insertion du participant ${participantId} avec he_participates=0`);
+          await db.query(
+            'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount) VALUES (?, ?, 0, 0)',
+            [expenseId, participantId]
+          );
+        }
       }
 
-      // Mettre à jour les participants sélectionnés avec leur statut et montant
+      // Calculer et mettre à jour les montants pour les participants sélectionnés
       if (split_type === 'equal') {
-        const shareAmount = selectedParticipants.length > 0 ? amount / selectedParticipants.length : 0;
+        // Répartition égale
+        const shareAmount = selectedParticipants.length > 0 ? parseFloat((amount / selectedParticipants.length).toFixed(2)) : 0;
+        console.log(`Répartition égale: ${shareAmount} par participant`);
+        
         for (const participant of selectedParticipants) {
-          const participantId = participant.id || participant.participant_id;
+          const participantId = participant.id;
           if (!participantId) continue;
           
-          const exists = existingParticipantIds.includes(participantId);
-          console.log('Vérification du participant:', {
-            participantId,
-            exists,
-            existingParticipantIds,
-            split_type
-          });
+          const exists = existingParticipantIds.includes(participantId.toString());
+          
           if (exists) {
             await db.query(
               'UPDATE expense_participants SET he_participates = 1, share_amount = ? WHERE expense_id = ? AND participant_id = ?',
@@ -91,12 +108,19 @@ class ExpenseService {
           }
         }
       } else if (split_type === 'custom') {
+        // Répartition personnalisée
+        console.log('Répartition personnalisée');
+        
         for (const participant of selectedParticipants) {
-          const participantId = participant.id || participant.participant_id;
+          const participantId = participant.id;
           if (!participantId) continue;
           
-          const customAmount = expenseData.custom_amounts && expenseData.custom_amounts[participantId] || 0;
-          const exists = existingParticipantIds.includes(participantId);
+          // S'assurer que le montant personnalisé est un nombre valide
+          const customAmount = expenseData.custom_amounts && parseFloat(expenseData.custom_amounts[participantId]) || 0;
+          console.log(`Participant ${participantId}: montant personnalisé = ${customAmount}`);
+          
+          const exists = existingParticipantIds.includes(participantId.toString());
+          
           if (exists) {
             await db.query(
               'UPDATE expense_participants SET he_participates = 1, share_amount = ? WHERE expense_id = ? AND participant_id = ?',
@@ -110,19 +134,63 @@ class ExpenseService {
           }
         }
       } else if (split_type === 'shares') {
-        const totalShares = selectedParticipants.reduce((sum, p) => {
-          const participantId = p.id || p.participant_id;
-          if (!participantId) return sum;
-          return sum + ((expenseData.shares && expenseData.shares[participantId]) || 1);
-        }, 0);
-
+        // Répartition par parts
+        console.log('Répartition par parts');
+        
+        // Calculer le total des parts en fonction des montants
+        const totalAmount = parseFloat(amount);
+        let totalShares = 0;
+        
+        // Première passe : calculer le total des parts
         for (const participant of selectedParticipants) {
-          const participantId = participant.id || participant.participant_id;
+          const participantId = participant.id;
           if (!participantId) continue;
           
-          const shares = (expenseData.shares && expenseData.shares[participantId]) || 1;
-          const shareAmount = totalShares > 0 ? (amount * shares) / totalShares : 0;
-          const exists = existingParticipantIds.includes(participantId);
+          // Obtenir le montant de la part du participant
+          let shareAmount = 0;
+          if (expenseData.shares && expenseData.shares[participantId]) {
+            // Si nous avons des parts spécifiées, calculer le montant proportionnellement
+            const shares = parseFloat(expenseData.shares[participantId]);
+            shareAmount = (totalAmount * shares) / 100; // Supposons que les parts sont en pourcentage
+          } else if (participant.share_amount) {
+            // Si nous avons un montant spécifique
+            shareAmount = parseFloat(participant.share_amount);
+          }
+          
+          // Calculer le nombre de parts en fonction du montant
+          const shareCount = Math.round((shareAmount / totalAmount) * 100);
+          totalShares += shareCount;
+        }
+        
+        console.log(`Total des parts: ${totalShares}`);
+
+        // Deuxième passe : mettre à jour les participants avec les montants et parts calculés
+        for (const participant of selectedParticipants) {
+          const participantId = participant.id;
+          if (!participantId) continue;
+          
+          // Calculer le montant de la part
+          let shareAmount = 0;
+          let shareCount = 1;
+          
+          if (expenseData.shares && expenseData.shares[participantId]) {
+            // Si nous avons des parts spécifiées, calculer le montant proportionnellement
+            const shares = parseFloat(expenseData.shares[participantId]);
+            shareAmount = (totalAmount * shares) / 100;
+            shareCount = shares;
+          } else if (participant.share_amount) {
+            // Si nous avons un montant spécifique
+            shareAmount = parseFloat(participant.share_amount);
+            shareCount = Math.round((shareAmount / totalAmount) * 100);
+          }
+          
+          // S'assurer que le montant est arrondi à 2 décimales
+          shareAmount = parseFloat(shareAmount.toFixed(2));
+          
+          console.log(`Participant ${participantId}: ${shareCount} parts = ${shareAmount}`);
+          
+          const exists = existingParticipantIds.includes(participantId.toString());
+          
           if (exists) {
             await db.query(
               'UPDATE expense_participants SET he_participates = 1, share_amount = ? WHERE expense_id = ? AND participant_id = ?',

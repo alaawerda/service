@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const expenseService = require('../services/expenseService');
+const db = require('../db');
 
 router.put('/:id', async (req, res) => { // Correct route path
   try {
@@ -120,6 +121,35 @@ router.put('/:id', async (req, res) => { // Correct route path
       console.error('[Update Expense] Server error while updating expense');
       res.status(500).json({ error: 'Failed to update expense' });
     }
+  }
+});
+
+// Delete expense endpoint
+router.delete('/:id', async (req, res) => {
+  try {
+    const expenseId = req.params.id;
+    
+    console.log('[Delete Expense] Request received:', { expenseId });
+
+    // Check if expense exists
+    const [expenseRows] = await db.query('SELECT id FROM expenses WHERE id = ?', [expenseId]);
+    if (!expenseRows || expenseRows.length === 0) {
+      console.log('[Delete Expense] Expense not found:', expenseId);
+      return res.status(404).json({ error: 'Expense not found' });
+    }
+
+    // Delete expense (cascade will handle expense_participants)
+    await db.query('DELETE FROM expenses WHERE id = ?', [expenseId]);
+
+    console.log('[Delete Expense] Successfully deleted expense:', { expenseId });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Delete Expense] Error:', {
+      message: error.message,
+      stack: error.stack,
+      expenseId: req.params.id
+    });
+    res.status(500).json({ error: 'Failed to delete expense' });
   }
 });
 

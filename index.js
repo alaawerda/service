@@ -254,7 +254,7 @@ app.post('/api/register', async (req, res) => {
     // Check if user already exists
     const checkQuery = 'SELECT * FROM users WHERE email = ?';
     try {
-      const [rows] = await db.query(checkQuery, [email]);
+      const rows = await db.query(checkQuery, [email]);
       
       if (rows && rows.length > 0) {
         return res.status(400).json({ error: 'User already exists' });
@@ -265,7 +265,7 @@ app.post('/api/register', async (req, res) => {
 
       // Insert new user
       const insertQuery = 'INSERT INTO users (email, password, username) VALUES (?, ?, ?)';
-      const [result] = await db.query(insertQuery, [email, hashedPassword, username]);
+      const result = await db.query(insertQuery, [email, hashedPassword, username]);
       const userId = result.insertId;
       
       // Store user data in session
@@ -278,6 +278,11 @@ app.post('/api/register', async (req, res) => {
       res.status(201).json({ message: 'User registered successfully' });
     } catch (dbError) {
       console.error('Database error:', dbError);
+      // Retourner le message SQL brut pour les doublons (username/email)
+      if (dbError.code === 'ER_DUP_ENTRY') {
+        const sqlMsg = dbError.sqlMessage || 'Duplicate entry';
+        return res.status(400).json({ error: sqlMsg });
+      }
       return res.status(500).json({ error: 'Error creating user' });
     }
   } catch (error) {
@@ -591,6 +596,29 @@ app.post('/api/expenses', async (req, res) => {
     } catch (insertErr) {
       console.error('[Create Expense] Error inserting expense participants:', insertErr);
       return res.status(500).json({ error: 'Error inserting expense participants' });
+    }
+
+    // Ajouter les participants non sélectionnés avec share_amount=0, he_participates=0
+    try {
+      // Obtenir tous les participants de l'événement
+      const allParticipants = await db.query('SELECT id FROM participants WHERE event_id = ?', [groupId]);
+      const selectedIds = validParticipants.map(p => p.id);
+      const deselectedIds = allParticipants
+        .map(p => p.id)
+        .filter(id => !selectedIds.includes(id));
+      if (deselectedIds.length > 0) {
+        const deselectedValues = deselectedIds.map(id => [expenseId, id, 0, 0]);
+        const placeholders2 = deselectedValues.map(() => '(?, ?, ?, ?)').join(', ');
+        const flatDeselected = deselectedValues.flat();
+        await db.query(
+          `INSERT INTO expense_participants (expense_id, participant_id, share_amount, he_participates) VALUES ${placeholders2}`,
+          flatDeselected
+        );
+        console.log('[Create Expense] Deselected participants inserted with zero share.');
+      }
+    } catch (errDeselected) {
+      console.error('[Create Expense] Error inserting deselected participants:', errDeselected);
+      return res.status(500).json({ error: 'Error inserting deselected participants' });
     }
     res.status(201).json({ message: 'Expense created successfully', expenseId });
   } catch (error) {

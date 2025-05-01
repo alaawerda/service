@@ -130,6 +130,22 @@ router.post('/api/join-event', async (req, res) => {
       delete event.expense_participant_ids;
       delete event.expense_share_amounts;
 
+      // Compute sum of share_amount for the logged-in user, default to 0 if missing
+      const shareQuery = `
+        SELECT COALESCE(SUM(ep.share_amount), 0) AS myShareTotal
+        FROM expense_participants ep
+        JOIN expenses e ON ep.expense_id = e.id
+        JOIN participants p ON ep.participant_id = p.id
+        WHERE e.event_id = ? AND p.user_id = ?
+      `;
+      const [shareRows] = await db.query(shareQuery, [eventId, userId]);
+      // Debug shareRows and computed myShareTotal
+      console.log('[Event Details] shareRows:', shareRows);
+      console.log(`[Event Details] My Expenses total for user ${userId}:`, shareRows?.[0]?.myShareTotal);
+      const myShareTotal =shareRows;
+      console.log(`[Event Details] My Expenses total for user ${userId}:`, Number(shareRows?.myShareTotal ?? 0));
+      event.myShareTotal = Number(shareRows?.myShareTotal ?? 0);
+
       // Récupérer les dépenses
       console.log('[Event Details] Fetching expenses for event:', eventId);
       const expensesQuery = `
@@ -297,6 +313,7 @@ router.post('/api/join-event', async (req, res) => {
       console.log('[Get Expense] Request received:', { expenseId });
 
       console.log('[Get Expense] Executing database query...');
+      // Requête améliorée pour récupérer toutes les informations nécessaires, y compris les parts pour le split_type 'shares'
       const query = `
        SELECT 
     e.*,
@@ -327,13 +344,68 @@ GROUP BY e.id;
       const participantShares = expenseData.participant_shares ? expenseData.participant_shares.split(',') : [];
       const participantParticipates = expenseData.participant_participates ? expenseData.participant_participates.split(',') : [];
       
-      // Map participants data
-      expenseData.participants = participantIds.map((id, index) => ({
-        participant_id: id,
-        name: participantNames[index] || '',
-        share_amount: parseFloat(participantShares[index] || 0),
-        he_participates: participantParticipates[index] === '1'
-      })).filter(p => p.participant_id);
+      // Récupérer tous les participants de l'événement pour s'assurer d'inclure même ceux qui ne participent pas
+      const eventId = expenseData.event_id;
+      const allParticipantsQuery = 'SELECT id, name FROM participants WHERE event_id = ?';
+      const allParticipants = await db.query(allParticipantsQuery, [eventId]);
+      
+      // Créer un mapping des participants existants dans la dépense
+      const existingParticipantsMap = {};
+      participantIds.forEach((id, index) => {
+        existingParticipantsMap[id] = {
+          participant_id: id,
+          name: participantNames[index] || '',
+          share_amount: parseFloat(participantShares[index] || 0),
+          he_participates: participantParticipates[index] === '1'
+        };
+      });
+      
+      // Calculer les parts pour le split_type 'shares' si nécessaire
+      if (expenseData.split_type === 'shares') {
+        // Calculer le total des parts pour les participants qui participent
+        const totalShares = Object.values(existingParticipantsMap)
+          .filter(p => p.he_participates)
+          .reduce((sum, p) => {
+            // Calculer les parts en fonction du montant
+            const totalAmount = parseFloat(expenseData.amount);
+            const shareAmount = parseFloat(p.share_amount);
+            // Si le montant total est 0, chaque participant a 1 part
+            if (totalAmount === 0) return sum + 1;
+            // Sinon, calculer les parts proportionnellement
+            const shares = Math.round((shareAmount / totalAmount) * 100);
+            return sum + (shares || 1);
+          }, 0);
+        
+        // Attribuer les parts à chaque participant
+        Object.values(existingParticipantsMap)
+          .filter(p => p.he_participates)
+          .forEach(p => {
+            const totalAmount = parseFloat(expenseData.amount);
+            const shareAmount = parseFloat(p.share_amount);
+            if (totalAmount === 0) {
+              p.share_count = 1;
+            } else {
+              // Calculer les parts proportionnellement et arrondir
+              p.share_count = Math.max(1, Math.round((shareAmount / totalAmount) * 100));
+            }
+          });
+      }
+      
+      // Construire la liste complète des participants, y compris ceux qui ne participent pas
+      expenseData.participants = allParticipants.map(p => {
+        if (existingParticipantsMap[p.id]) {
+          return existingParticipantsMap[p.id];
+        } else {
+          // Participant qui n'est pas dans la dépense
+          return {
+            participant_id: p.id,
+            name: p.name,
+            share_amount: 0,
+            he_participates: false,
+            share_count: 1 // Valeur par défaut pour les parts
+          };
+        }
+      });
 
       // Remove temporary fields
       delete expenseData.participant_ids;
@@ -343,7 +415,8 @@ GROUP BY e.id;
 
       console.log('[Get Expense] Successfully retrieved expense:', {
         expenseId,
-        participantCount: expenseData.participants.length
+        participantCount: expenseData.participants.length,
+        split_type: expenseData.split_type
       });
 
       res.json(expenseData);
@@ -358,62 +431,117 @@ GROUP BY e.id;
     try {
       const { expenseId } = req.params;
       
+      // Utiliser la route principale pour assurer la cohérence
+      // Rediriger vers la route principale
+      console.log('[Get Expense Details] Redirecting to main expense endpoint');
+      
+      // Récupérer les détails de la dépense avec la requête complète
+      const query = `
+       SELECT 
+    e.*,
+    GROUP_CONCAT(p.id ORDER BY p.id) AS participant_ids,
+    GROUP_CONCAT(p.name ORDER BY p.id) AS participant_names,
+    GROUP_CONCAT(ep.share_amount ORDER BY p.id) AS participant_shares,
+    GROUP_CONCAT(ep.he_participates ORDER BY p.id) AS participant_participates
+FROM expenses e
+LEFT JOIN expense_participants ep ON e.id = ep.expense_id
+LEFT JOIN participants p ON ep.participant_id = p.id
+WHERE e.id = ? 
+GROUP BY e.id;
+      `;
+
       // Utiliser l'API promise de mysql2 au lieu des callbacks
-      const results = await db.query(`SELECT * FROM expenses WHERE id = ?`, [expenseId]);
+      const results = await db.query(query, [expenseId]);
       
       if (!results || results.length === 0) {
+        console.log('[Get Expense Details] Expense not found:', expenseId);
         return res.status(404).json({ error: 'Expense not found' });
       }
+
+      const expenseData = results[0];
       
-      console.log('[Get Expense] Database query successful:', {
-        expenseId,
-        rowCount: results.length
+      // Process the concatenated data into a structured format
+      const participantIds = expenseData.participant_ids ? expenseData.participant_ids.split(',') : [];
+      const participantNames = expenseData.participant_names ? expenseData.participant_names.split(',') : [];
+      const participantShares = expenseData.participant_shares ? expenseData.participant_shares.split(',') : [];
+      const participantParticipates = expenseData.participant_participates ? expenseData.participant_participates.split(',') : [];
+      
+      // Récupérer tous les participants de l'événement
+      const eventId = expenseData.event_id;
+      const allParticipantsQuery = 'SELECT id, name FROM participants WHERE event_id = ?';
+      const allParticipants = await db.query(allParticipantsQuery, [eventId]);
+      
+      // Créer un mapping des participants existants dans la dépense
+      const existingParticipantsMap = {};
+      participantIds.forEach((id, index) => {
+        existingParticipantsMap[id] = {
+          participant_id: id,
+          name: participantNames[index] || '',
+          share_amount: parseFloat(participantShares[index] || 0),
+          he_participates: participantParticipates[index] === '1'
+        };
       });
-
-      const expense = results[0];
-      console.log('[Get Expense] Raw expense data:', {
-        id: expense.id,
-        description: expense.description,
-        amount: expense.amount,
-        split_type: expense.split_type
-      });
-
-      const participantNames = expense.participant_names ? expense.participant_names.split(',') : [];
-      const participantIds = expense.participant_ids ? expense.participant_ids.split(',') : [];
-
-      console.log('[Get Expense] Processing participants:', {
-        participantCount: participantNames.length,
-        names: participantNames,
-        ids: participantIds
-      });
-
-      expense.participants = participantNames.map((name, index) => ({
-        id: participantIds[index],
-        name: name,
-        share_amount: expense.share_amount
-      }));
-
-      // Calculate individual shares based on split type
-      if (expense.split_type === 'equal') {
-        const shareAmount = expense.amount / expense.participants.length;
-        if (!expense.participants) return;
-        expense.participants.forEach(participant => {
-          participant.share_amount = shareAmount;
-        });
+      
+      // Calculer les parts pour le split_type 'shares' si nécessaire
+      if (expenseData.split_type === 'shares') {
+        // Calculer le total des parts pour les participants qui participent
+        const totalShares = Object.values(existingParticipantsMap)
+          .filter(p => p.he_participates)
+          .reduce((sum, p) => {
+            // Calculer les parts en fonction du montant
+            const totalAmount = parseFloat(expenseData.amount);
+            const shareAmount = parseFloat(p.share_amount);
+            // Si le montant total est 0, chaque participant a 1 part
+            if (totalAmount === 0) return sum + 1;
+            // Sinon, calculer les parts proportionnellement
+            const shares = Math.round((shareAmount / totalAmount) * 100);
+            return sum + (shares || 1);
+          }, 0);
+        
+        // Attribuer les parts à chaque participant
+        Object.values(existingParticipantsMap)
+          .filter(p => p.he_participates)
+          .forEach(p => {
+            const totalAmount = parseFloat(expenseData.amount);
+            const shareAmount = parseFloat(p.share_amount);
+            if (totalAmount === 0) {
+              p.share_count = 1;
+            } else {
+              // Calculer les parts proportionnellement et arrondir
+              p.share_count = Math.max(1, Math.round((shareAmount / totalAmount) * 100));
+            }
+          });
       }
-
-      delete expense.participant_names;
-      delete expense.participant_ids;
-      delete expense.participant_id;
-      delete expense.share_amount;
-
-      console.log('[Get Expense] Sending response:', {
-        expenseId: expense.id,
-        participantCount: expense.participants.length,
-        totalAmount: expense.amount
+      
+      // Construire la liste complète des participants
+      expenseData.participants = allParticipants.map(p => {
+        if (existingParticipantsMap[p.id]) {
+          return existingParticipantsMap[p.id];
+        } else {
+          // Participant qui n'est pas dans la dépense
+          return {
+            participant_id: p.id,
+            name: p.name,
+            share_amount: 0,
+            he_participates: false,
+            share_count: 1 // Valeur par défaut pour les parts
+          };
+        }
       });
 
-      res.json(expense);
+      // Remove temporary fields
+      delete expenseData.participant_ids;
+      delete expenseData.participant_names;
+      delete expenseData.participant_shares;
+      delete expenseData.participant_participates;
+
+      console.log('[Get Expense Details] Successfully retrieved expense:', {
+        expenseId,
+        participantCount: expenseData.participants.length,
+        split_type: expenseData.split_type
+      });
+
+      res.json(expenseData);
     } catch (error) {
       console.error('Server error:', error);
       res.status(500).json({ error: 'Server error' });
@@ -654,8 +782,34 @@ res.json({
   }
 });
 
+// Delete event endpoint
+router.delete('/api/events/:id', async (req, res) => {
+  try {
+    const eventId = req.params.id;
+    
+    console.log('[Delete Event] Request received:', { eventId });
+
+    // Check if event exists
+    const [eventRows] = await db.query('SELECT id FROM events WHERE id = ?', [eventId]);
+    if (!eventRows || eventRows.length === 0) {
+      console.log('[Delete Event] Event not found:', eventId);
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    // Delete event (cascade will handle participants and expenses)
+    await db.query('DELETE FROM events WHERE id = ?', [eventId]);
+
+    console.log('[Delete Event] Successfully deleted event:', { eventId });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Delete Event] Error:', {
+      message: error.message,
+      stack: error.stack,
+      eventId: req.params.id
+    });
+    res.status(500).json({ error: 'Failed to delete event' });
+  }
+});
+
   return router;
 };
-
-
-
