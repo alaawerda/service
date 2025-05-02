@@ -579,7 +579,20 @@ app.post('/api/expenses', async (req, res) => {
         shareAmount = totalShares > 0 ? (amount * participantShare) / totalShares : 0;
       }
       shareAmount = parseFloat(Math.max(0, shareAmount).toFixed(2));
-      return [expenseId, participant.id, shareAmount, 1];
+      // Calculate share_count ONLY for 'shares' type
+      let shareCount = null; // Default to null
+      if (split_type === 'shares') {
+        const sharesObj = shares && typeof shares === 'object' ? shares : {};
+        const shareValueStr = sharesObj[participantName] !== undefined ? String(sharesObj[participantName]) : '1';
+        const calculatedShare = parseFloat(shareValueStr);
+        // Use calculated share if valid and non-negative, otherwise default to 1
+        shareCount = (!isNaN(calculatedShare) && calculatedShare >= 0) ? calculatedShare : 1;
+      }
+
+      // Only include shareCount if split_type is 'shares'
+      return split_type === 'shares' 
+        ? [expenseId, participant.id, shareAmount, 1, shareCount] 
+        : [expenseId, participant.id, shareAmount, 1]
     }).filter(arr => arr.every(val => val !== undefined && val !== null && !isNaN(val)));
 
     if (expenseParticipantValues.length === 0) {
@@ -587,9 +600,17 @@ app.post('/api/expenses', async (req, res) => {
       return res.status(400).json({ error: 'No valid expense participants to insert' });
     }
 
-    const placeholders = expenseParticipantValues.map(() => '(?, ?, ?, ?)').join(', ');
+    // Determine if we need to include share_count in the query
+    const includeShareCount = split_type === 'shares';
+    const placeholders = expenseParticipantValues.map(() => 
+      includeShareCount ? '(?, ?, ?, ?, ?)' : '(?, ?, ?, ?)'
+    ).join(', ');
     const flatValues = expenseParticipantValues.flat();
-    const insertExpenseParticipantsQuery = `INSERT INTO expense_participants (expense_id, participant_id, share_amount, he_participates) VALUES ${placeholders}`;
+    
+    // Build the query based on split_type
+    const insertExpenseParticipantsQuery = includeShareCount
+      ? `INSERT INTO expense_participants (expense_id, participant_id, share_amount, he_participates, share_count) VALUES ${placeholders}`
+      : `INSERT INTO expense_participants (expense_id, participant_id, share_amount, he_participates) VALUES ${placeholders}`;
     try {
       await db.query(insertExpenseParticipantsQuery, flatValues);
       console.log('[Create Expense] Expense participants inserted successfully.');

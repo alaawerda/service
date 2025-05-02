@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS expense_participants (
   expense_id INT NOT NULL,
   participant_id VARCHAR(255) NOT NULL,
   share_amount DECIMAL(10, 2) NOT NULL,
-  share_count INT DEFAULT 1,
+  share_count INT ,
   created_at TIMESTAMP DEFAULT current_timestamp(),
   he_participates BOOLEAN DEFAULT TRUE,
   FOREIGN KEY (expense_id) REFERENCES expenses(id) ON DELETE CASCADE,

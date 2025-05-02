@@ -192,9 +192,15 @@ router.post('/api/join-event', async (req, res) => {
       const { eventId } = req.params;
 
       const query = `
-        SELECT e.*, ep.participant_id, ep.share_amount, ep.he_participates
+       SELECT 
+          e.*, 
+          ep.participant_id, 
+          ep.share_amount, 
+          ep.he_participates,
+          p.name AS participant_name -- Ajout du nom d'utilisateur
         FROM expenses e
         LEFT JOIN expense_participants ep ON e.id = ep.expense_id
+        LEFT JOIN participants as p on ep.participant_id = p.id
         WHERE e.event_id = ?
         ORDER BY e.created_date DESC
       `;
@@ -226,6 +232,7 @@ router.post('/api/join-event', async (req, res) => {
           const expense = expenseMap.get(row.id);
           expense.participants.push({
             participant_id: row.participant_id,
+            name: row.participant_name, // Utilisation du nom d'utilisateur récupéré
             share_amount: row.share_amount,
             he_participates: row.he_participates
           });
@@ -320,6 +327,7 @@ router.post('/api/join-event', async (req, res) => {
     GROUP_CONCAT(p.id ORDER BY p.id) AS participant_ids,
     GROUP_CONCAT(p.name ORDER BY p.id) AS participant_names,
     GROUP_CONCAT(ep.share_amount ORDER BY p.id) AS participant_shares,
+    GROUP_CONCAT(ep.share_count ORDER BY p.id) AS participant_share_counts, -- Added share_count
     GROUP_CONCAT(ep.he_participates ORDER BY p.id) AS participant_participates
 FROM expenses e
 LEFT JOIN expense_participants ep ON e.id = ep.expense_id
@@ -342,6 +350,7 @@ GROUP BY e.id;
       const participantIds = expenseData.participant_ids ? expenseData.participant_ids.split(',') : [];
       const participantNames = expenseData.participant_names ? expenseData.participant_names.split(',') : [];
       const participantShares = expenseData.participant_shares ? expenseData.participant_shares.split(',') : [];
+      const participantShareCounts = expenseData.participant_share_counts ? expenseData.participant_share_counts.split(',') : []; // Added share_counts
       const participantParticipates = expenseData.participant_participates ? expenseData.participant_participates.split(',') : [];
       
       // Récupérer tous les participants de l'événement pour s'assurer d'inclure même ceux qui ne participent pas
@@ -356,40 +365,14 @@ GROUP BY e.id;
           participant_id: id,
           name: participantNames[index] || '',
           share_amount: parseFloat(participantShares[index] || 0),
+          share_count: parseInt(participantShareCounts[index] || 1), // Added share_count, default to 1
           he_participates: participantParticipates[index] === '1'
         };
       });
       
-      // Calculer les parts pour le split_type 'shares' si nécessaire
-      if (expenseData.split_type === 'shares') {
-        // Calculer le total des parts pour les participants qui participent
-        const totalShares = Object.values(existingParticipantsMap)
-          .filter(p => p.he_participates)
-          .reduce((sum, p) => {
-            // Calculer les parts en fonction du montant
-            const totalAmount = parseFloat(expenseData.amount);
-            const shareAmount = parseFloat(p.share_amount);
-            // Si le montant total est 0, chaque participant a 1 part
-            if (totalAmount === 0) return sum + 1;
-            // Sinon, calculer les parts proportionnellement
-            const shares = Math.round((shareAmount / totalAmount) * 100);
-            return sum + (shares || 1);
-          }, 0);
-        
-        // Attribuer les parts à chaque participant
-        Object.values(existingParticipantsMap)
-          .filter(p => p.he_participates)
-          .forEach(p => {
-            const totalAmount = parseFloat(expenseData.amount);
-            const shareAmount = parseFloat(p.share_amount);
-            if (totalAmount === 0) {
-              p.share_count = 1;
-            } else {
-              // Calculer les parts proportionnellement et arrondir
-              p.share_count = Math.max(1, Math.round((shareAmount / totalAmount) * 100));
-            }
-          });
-      }
+      // Note: share_count est maintenant récupéré directement depuis la base de données
+      // et n'est plus recalculé ici pour le type 'shares'.
+      // La valeur de la base de données est utilisée telle quelle.
       
       // Construire la liste complète des participants, y compris ceux qui ne participent pas
       expenseData.participants = allParticipants.map(p => {
@@ -442,6 +425,7 @@ GROUP BY e.id;
     GROUP_CONCAT(p.id ORDER BY p.id) AS participant_ids,
     GROUP_CONCAT(p.name ORDER BY p.id) AS participant_names,
     GROUP_CONCAT(ep.share_amount ORDER BY p.id) AS participant_shares,
+    GROUP_CONCAT(ep.share_count ORDER BY p.id) AS participant_share_counts, -- Added share_count
     GROUP_CONCAT(ep.he_participates ORDER BY p.id) AS participant_participates
 FROM expenses e
 LEFT JOIN expense_participants ep ON e.id = ep.expense_id
@@ -478,40 +462,14 @@ GROUP BY e.id;
           participant_id: id,
           name: participantNames[index] || '',
           share_amount: parseFloat(participantShares[index] || 0),
+          share_count: parseInt(participantShareCounts[index] || 1), // Added share_count, default to 1
           he_participates: participantParticipates[index] === '1'
         };
       });
       
-      // Calculer les parts pour le split_type 'shares' si nécessaire
-      if (expenseData.split_type === 'shares') {
-        // Calculer le total des parts pour les participants qui participent
-        const totalShares = Object.values(existingParticipantsMap)
-          .filter(p => p.he_participates)
-          .reduce((sum, p) => {
-            // Calculer les parts en fonction du montant
-            const totalAmount = parseFloat(expenseData.amount);
-            const shareAmount = parseFloat(p.share_amount);
-            // Si le montant total est 0, chaque participant a 1 part
-            if (totalAmount === 0) return sum + 1;
-            // Sinon, calculer les parts proportionnellement
-            const shares = Math.round((shareAmount / totalAmount) * 100);
-            return sum + (shares || 1);
-          }, 0);
-        
-        // Attribuer les parts à chaque participant
-        Object.values(existingParticipantsMap)
-          .filter(p => p.he_participates)
-          .forEach(p => {
-            const totalAmount = parseFloat(expenseData.amount);
-            const shareAmount = parseFloat(p.share_amount);
-            if (totalAmount === 0) {
-              p.share_count = 1;
-            } else {
-              // Calculer les parts proportionnellement et arrondir
-              p.share_count = Math.max(1, Math.round((shareAmount / totalAmount) * 100));
-            }
-          });
-      }
+      // Note: share_count est maintenant récupéré directement depuis la base de données
+      // et n'est plus recalculé ici pour le type 'shares'.
+      // La valeur de la base de données est utilisée telle quelle.
       
       // Construire la liste complète des participants
       expenseData.participants = allParticipants.map(p => {

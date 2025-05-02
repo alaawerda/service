@@ -95,17 +95,35 @@ class ExpenseService {
           
           const exists = existingParticipantIds.includes(participantId.toString());
           
+          // Prepare update/insert query
+          let query = '';
+          let params = [];
+
           if (exists) {
-            await db.query(
-              'UPDATE expense_participants SET he_participates = 1, share_amount = ? WHERE expense_id = ? AND participant_id = ?',
-              [shareAmount, expenseId, participantId]
-            );
+            query = 'UPDATE expense_participants SET he_participates = 1, share_amount = ?';
+            params = [shareAmount];
+            // Add share_count update only if split_type is 'shares'
+            if (split_type === 'shares') {
+              query += ', share_count = ?';
+              params.push(shareCount); // shareCount can be null here
+            }
+            query += ' WHERE expense_id = ? AND participant_id = ?';
+            params.push(expenseId, participantId);
           } else {
-            await db.query(
-              'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount) VALUES (?, ?, 1, ?)',
-              [expenseId, participantId, shareAmount]
-            );
+            query = 'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount';
+            params = [expenseId, participantId, 1, shareAmount];
+            // Add share_count insert only if split_type is 'shares'
+            if (split_type === 'shares') {
+              query += ', share_count';
+              params.push(shareCount); // shareCount can be null here
+              query += ') VALUES (?, ?, ?, ?, ?)';
+            } else {
+              query += ') VALUES (?, ?, ?, ?)';
+            }
           }
+          
+          // Ensure null values are handled correctly
+          await db.query(query, params.map(v => v === undefined ? null : v));
         }
       } else if (split_type === 'custom') {
         // Répartition personnalisée
@@ -171,17 +189,23 @@ class ExpenseService {
           
           // Calculer le montant de la part
           let shareAmount = 0;
-          let shareCount = 1;
+          let shareCount = null; // Default to null
           
-          if (expenseData.shares && expenseData.shares[participantId]) {
-            // Si nous avons des parts spécifiées, calculer le montant proportionnellement
-            const shares = parseFloat(expenseData.shares[participantId]);
-            shareAmount = (totalAmount * shares) / 100;
-            shareCount = shares;
-          } else if (participant.share_amount) {
-            // Si nous avons un montant spécifique
-            shareAmount = parseFloat(participant.share_amount);
-            shareCount = Math.round((shareAmount / totalAmount) * 100);
+          if (split_type === 'shares') { // Calculate shareCount only for 'shares'
+            if (expenseData.shares && expenseData.shares[participantId]) {
+              // Si nous avons des parts spécifiées, calculer le montant proportionnellement
+              const shares = parseFloat(expenseData.shares[participantId]);
+              shareAmount = (totalAmount * shares) / 100;
+              shareCount = (!isNaN(shares) && shares >= 0) ? shares : null;
+            } else if (participant.share_amount) {
+              // Si nous avons un montant spécifique (moins courant pour la mise à jour des parts, mais gardé pour robustesse)
+              shareAmount = parseFloat(participant.share_amount);
+              // shareCount = Math.round((shareAmount / totalAmount) * 100); // Le calcul basé sur share_amount n'est peut-être pas souhaité ici
+            }
+          } else { // For 'equal' or 'custom', calculate only shareAmount
+             if (participant.share_amount) {
+               shareAmount = parseFloat(participant.share_amount);
+             }
           }
           
           // S'assurer que le montant est arrondi à 2 décimales
@@ -191,17 +215,35 @@ class ExpenseService {
           
           const exists = existingParticipantIds.includes(participantId.toString());
           
+          // Prepare update/insert query
+          let query = '';
+          let params = [];
+
           if (exists) {
-            await db.query(
-              'UPDATE expense_participants SET he_participates = 1, share_amount = ? WHERE expense_id = ? AND participant_id = ?',
-              [shareAmount, expenseId, participantId]
-            );
+            query = 'UPDATE expense_participants SET he_participates = 1, share_amount = ?';
+            params = [shareAmount];
+            // Add share_count update only if split_type is 'shares'
+            if (split_type === 'shares') {
+              query += ', share_count = ?';
+              params.push(shareCount); // shareCount can be null here
+            }
+            query += ' WHERE expense_id = ? AND participant_id = ?';
+            params.push(expenseId, participantId);
           } else {
-            await db.query(
-              'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount) VALUES (?, ?, 1, ?)',
-              [expenseId, participantId, shareAmount]
-            );
+            query = 'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount';
+            params = [expenseId, participantId, 1, shareAmount];
+            // Add share_count insert only if split_type is 'shares'
+            if (split_type === 'shares') {
+              query += ', share_count';
+              params.push(shareCount); // shareCount can be null here
+              query += ') VALUES (?, ?, ?, ?, ?)';
+            } else {
+              query += ') VALUES (?, ?, ?, ?)';
+            }
           }
+          
+          // Ensure null values are handled correctly
+          await db.query(query, params.map(v => v === undefined ? null : v));
         }
       }
       // Commit transaction
