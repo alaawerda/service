@@ -65,3 +65,25 @@ CREATE TABLE `users` (
 CREATE INDEX idx_expenses_event ON expenses(event_id);
 CREATE INDEX idx_expense_participants_expense ON expense_participants(expense_id);
 CREATE INDEX idx_expense_participants_participant ON expense_participants(participant_id);
+
+-- Create reimbursements table
+CREATE TABLE IF NOT EXISTS reimbursements (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  event_id INT NOT NULL,
+  debtor_id INT NOT NULL,
+  creditor_id INT NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL,
+  currency VARCHAR(3) NOT NULL,
+  date TIMESTAMP DEFAULT current_timestamp(),
+  status ENUM('pending', 'completed', 'disputed') DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT current_timestamp(),
+  FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+  FOREIGN KEY (debtor_id) REFERENCES participants(id) ON DELETE CASCADE,
+  FOREIGN KEY (creditor_id) REFERENCES participants(id) ON DELETE CASCADE
+);
+
+-- Add indexes for reimbursements
+CREATE INDEX idx_reimbursements_event ON reimbursements(event_id);
+CREATE INDEX idx_reimbursements_debtor ON reimbursements(debtor_id);
+CREATE INDEX idx_reimbursements_creditor ON reimbursements(creditor_id);
+CREATE INDEX idx_reimbursements_status ON reimbursements(status);

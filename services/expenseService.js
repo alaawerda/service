@@ -34,7 +34,9 @@ class ExpenseService {
       const normalizedParticipants = participants.map(p => ({
         id: p.id || p.participant_id,
         name: p.name,
-        selected: p.selected === true || p.he_participates === 1 || p.he_participates === true
+        selected: p.selected === true || p.he_participates === 1 || p.he_participates === true,
+        share_amount: p.share_amount,
+        share_count: p.share_count
       }));
 
       // Filtrer les participants sélectionnés et non sélectionnés
@@ -155,58 +157,14 @@ class ExpenseService {
         // Répartition par parts
         console.log('Répartition par parts');
         
-        // Calculer le total des parts en fonction des montants
-        const totalAmount = parseFloat(amount);
-        let totalShares = 0;
-        
-        // Première passe : calculer le total des parts
+        // Utiliser directement les valeurs envoyées par le client
         for (const participant of selectedParticipants) {
           const participantId = participant.id;
           if (!participantId) continue;
           
-          // Obtenir le montant de la part du participant
-          let shareAmount = 0;
-          if (expenseData.shares && expenseData.shares[participantId]) {
-            // Si nous avons des parts spécifiées, calculer le montant proportionnellement
-            const shares = parseFloat(expenseData.shares[participantId]);
-            shareAmount = (totalAmount * shares) / 100; // Supposons que les parts sont en pourcentage
-          } else if (participant.share_amount) {
-            // Si nous avons un montant spécifique
-            shareAmount = parseFloat(participant.share_amount);
-          }
-          
-          // Calculer le nombre de parts en fonction du montant
-          const shareCount = Math.round((shareAmount / totalAmount) * 100);
-          totalShares += shareCount;
-        }
-        
-        console.log(`Total des parts: ${totalShares}`);
-
-        // Deuxième passe : mettre à jour les participants avec les montants et parts calculés
-        for (const participant of selectedParticipants) {
-          const participantId = participant.id;
-          if (!participantId) continue;
-          
-          // Calculer le montant de la part
-          let shareAmount = 0;
-          let shareCount = null; // Default to null
-          
-          if (split_type === 'shares') { // Calculate shareCount only for 'shares'
-            if (expenseData.shares && expenseData.shares[participantId]) {
-              // Si nous avons des parts spécifiées, calculer le montant proportionnellement
-              const shares = parseFloat(expenseData.shares[participantId]);
-              shareAmount = (totalAmount * shares) / 100;
-              shareCount = (!isNaN(shares) && shares >= 0) ? shares : null;
-            } else if (participant.share_amount) {
-              // Si nous avons un montant spécifique (moins courant pour la mise à jour des parts, mais gardé pour robustesse)
-              shareAmount = parseFloat(participant.share_amount);
-              // shareCount = Math.round((shareAmount / totalAmount) * 100); // Le calcul basé sur share_amount n'est peut-être pas souhaité ici
-            }
-          } else { // For 'equal' or 'custom', calculate only shareAmount
-             if (participant.share_amount) {
-               shareAmount = parseFloat(participant.share_amount);
-             }
-          }
+          // Utiliser directement share_amount et share_count du participant
+          let shareAmount = participant.share_amount ? parseFloat(participant.share_amount) : 0;
+          let shareCount = participant.share_count !== undefined ? parseFloat(participant.share_count) : null;
           
           // S'assurer que le montant est arrondi à 2 décimales
           shareAmount = parseFloat(shareAmount.toFixed(2));
@@ -222,24 +180,14 @@ class ExpenseService {
           if (exists) {
             query = 'UPDATE expense_participants SET he_participates = 1, share_amount = ?';
             params = [shareAmount];
-            // Add share_count update only if split_type is 'shares'
-            if (split_type === 'shares') {
-              query += ', share_count = ?';
-              params.push(shareCount); // shareCount can be null here
-            }
+            // Add share_count update
+            query += ', share_count = ?';
+            params.push(shareCount); // shareCount can be null here
             query += ' WHERE expense_id = ? AND participant_id = ?';
             params.push(expenseId, participantId);
           } else {
-            query = 'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount';
-            params = [expenseId, participantId, 1, shareAmount];
-            // Add share_count insert only if split_type is 'shares'
-            if (split_type === 'shares') {
-              query += ', share_count';
-              params.push(shareCount); // shareCount can be null here
-              query += ') VALUES (?, ?, ?, ?, ?)';
-            } else {
-              query += ') VALUES (?, ?, ?, ?)';
-            }
+            query = 'INSERT INTO expense_participants (expense_id, participant_id, he_participates, share_amount, share_count) VALUES (?, ?, ?, ?, ?)';
+            params = [expenseId, participantId, 1, shareAmount, shareCount];
           }
           
           // Ensure null values are handled correctly

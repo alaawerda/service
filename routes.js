@@ -769,5 +769,191 @@ router.delete('/api/events/:id', async (req, res) => {
   }
 });
 
+// Get debts for user
+router.get('/api/debts/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Get all events where the user is a participant
+    const eventsQuery = `
+      SELECT DISTINCT e.id, e.name as event_name, e.currency
+      FROM events e
+      JOIN participants p ON e.id = p.event_id
+      WHERE p.user_id = ?
+    `;
+    const events = await db.query(eventsQuery, [userId]);
+    
+    const debts = [];
+    
+    // For each event, calculate the debts
+    for (const event of events) {
+      const balances = await balanceService.calculateDebts(event.id, userId);
+      
+      // Get the user's participant name
+      const userParticipantQuery = `
+        SELECT name FROM participants 
+        WHERE event_id = ? AND user_id = ?
+      `;
+      const userParticipantResult = await db.query(userParticipantQuery, [event.id, userId]);
+      
+      if (userParticipantResult && userParticipantResult.length > 0) {
+        const userName = userParticipantResult[0].name;
+        
+        // Find debts where the user is the debtor (from)
+        const userDebts = balances.debts.filter(debt => 
+          debt.from === userName && debt.amount > 0
+        );
+        
+        // Add event information to each debt
+        const debtsWithEvent = userDebts.map(debt => ({
+          id: event.id, // Using event id as debt id for now
+          amount: debt.amount,
+          creditor: {
+            name: debt.to
+          },
+          event: {
+            id: event.id,
+            name: event.event_name,
+            currency: event.currency
+          }
+        }));
+        
+        debts.push(...debtsWithEvent);
+      }
+    }
+    
+    res.json({ debts });
+  } catch (error) {
+    console.error('Error fetching debts:', error);
+    res.status(500).json({ error: 'Failed to fetch debts' });
+  }
+});
+
+// Create a new reimbursement
+router.post('/api/reimbursements', async (req, res) => {
+  try {
+    const userId = req.headers['x-user-id'];
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    const { event_id, from, to, amount, currency } = req.body;
+
+    // Vérifier que tous les paramètres requis sont présents
+    if (!event_id || !from || !to || !amount || !currency) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+
+    // Récupérer les IDs des participants
+    const debtorResult = await db.query(
+      'SELECT id FROM participants WHERE event_id = ? AND name = ?',
+      [event_id, from]
+    );
+    const creditorResult = await db.query(
+      'SELECT id FROM participants WHERE event_id = ? AND name = ?',
+      [event_id, to]
+    );
+    
+    // Check if results exist and have at least one row
+    if (!debtorResult || debtorResult.length === 0 || !creditorResult || creditorResult.length === 0) {
+      return res.status(400).json({ error: 'Participants not found' });
+    }
+    
+    const debtor = debtorResult[0];
+    const creditor = creditorResult[0];
+
+    // Vérifier que le débiteur est bien l'utilisateur connecté
+    /* (debtor.id !== parseInt(userId)) {
+      return res.status(403).json({ error: 'You can only create reimbursements for yourself' });
+    }*/
+
+    // Insérer le remboursement avec le statut 'completed'
+    const result = await db.query(
+      'INSERT INTO reimbursements (event_id, debtor_id, creditor_id, amount, date, status, currency) VALUES (?, ?, ?, ?, NOW(), ?, ?)',
+      [event_id, debtor.id, creditor.id, amount, 'completed', currency]
+    );
+
+    res.status(201).json({ id: result.insertId });
+  } catch (error) {
+    console.error('Error creating reimbursement:', error);
+    res.status(500).json({ error: 'Failed to create reimbursement' });
+  }
+});
+
+// Update reimbursement status
+router.patch('/api/reimbursements/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    // Get the reimbursement details
+    const reimbursementQuery = `
+      SELECT r.*, p.user_id as creditor_user_id
+      FROM reimbursements r
+      JOIN participants p ON r.creditor_id = p.id
+      WHERE r.id = ?
+    `;
+    const reimbursementResult = await db.query(reimbursementQuery, [id]);
+    
+    if (!reimbursementResult || reimbursementResult.length === 0) {
+      return res.status(404).json({ error: 'Reimbursement not found' });
+    }
+    
+    const reimbursement = reimbursementResult[0];
+    
+    // Verify the user is either the debtor or creditor
+    const isCreditor = reimbursement.creditor_user_id === req.user.id;
+    const isDebtor = reimbursement.debtor_id === req.user.id;
+    
+    if (!isCreditor && !isDebtor) {
+      return res.status(403).json({ error: 'Unauthorized: Only the debtor or creditor can update the status' });
+    }
+    
+    // Only allow status updates based on user role
+    if (isDebtor && status !== 'completed') {
+      return res.status(403).json({ error: 'Debtor can only mark as completed' });
+    }
+    
+    if (isCreditor && !['completed', 'disputed'].includes(status)) {
+      return res.status(403).json({ error: 'Creditor can only mark as completed or disputed' });
+    }
+    
+    const updateQuery = 'UPDATE reimbursements SET status = ? WHERE id = ?';
+    await db.query(updateQuery, [status, id]);
+    
+    res.json({ message: 'Reimbursement status updated successfully' });
+  } catch (error) {
+    console.error('Error updating reimbursement status:', error);
+    res.status(500).json({ error: 'Failed to update reimbursement status' });
+  }
+});
+
+// Get reimbursement history for a user
+router.get('/api/reimbursements/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const query = `
+      SELECT r.*, 
+             e.name as event_name,
+             pd.name as debtor_name,
+             pc.name as creditor_name
+      FROM reimbursements r
+      JOIN participants pd ON r.debtor_id = pd.id
+      JOIN participants pc ON r.creditor_id = pc.id
+      JOIN events e ON pd.event_id = e.id
+      WHERE pd.user_id = ? OR pc.user_id = ?
+      ORDER BY r.created_at DESC
+    `;
+    
+    const reimbursements = await db.query(query, [userId, userId]);
+    
+    res.json({ reimbursements });
+  } catch (error) {
+    console.error('Error fetching reimbursement history:', error);
+    res.status(500).json({ error: 'Failed to fetch reimbursement history' });
+  }
+});
+
   return router;
 };
