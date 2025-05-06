@@ -104,15 +104,24 @@ router.post('/api/join-event', async (req, res) => {
       // 2. Pour chaque event_id, récupérer les détails nécessaires
       const detailedEventsPromises = eventIds.map(async (eventId) => {
         try {
-          // Récupérer les infos de base de l'événement
+          // Récupérer les infos de base de l'événement (incluant dates et code)
           const eventInfoResult = await db.query(
-            'SELECT id, name, currency FROM events WHERE id = ?',
+            'SELECT id, name, currency, start_date, end_date, created_at, code FROM events WHERE id = ?',
             [eventId]
           );
           if (!eventInfoResult || eventInfoResult.length === 0) {
             return null; // Ignorer si l'événement n'est pas trouvé
           }
           const eventInfo = eventInfoResult[0];
+
+          // Compter les participants
+          const [participantCountResult] = await db.query('SELECT COUNT(*) as count FROM participants WHERE event_id = ?', [eventId]);
+          const participantCount = participantCountResult?.count ?? 0;
+
+          // Compter les dépenses et calculer le montant total
+          const [expenseStatsResult] = await db.query('SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as totalAmount FROM expenses WHERE event_id = ?', [eventId]);
+          const expenseCount = expenseStatsResult?.count ?? 0;
+          const totalExpenseAmount = Number(expenseStatsResult?.totalAmount ?? 0);
 
           // Calculer myShareTotal
           const shareQuery = `
@@ -132,10 +141,18 @@ router.post('/api/join-event', async (req, res) => {
             id: eventInfo.id,
             name: eventInfo.name,
             currency: eventInfo.currency,
+            startDate: eventInfo.start_date, // Ajouté
+            endDate: eventInfo.end_date,     // Ajouté
+            created_at: eventInfo.created_at, // Ajouté
+            code: eventInfo.code,           // Ajouté
+            participants: [], // Placeholder, car on a juste le compte pour l'instant
+            participantCount: participantCount, // Ajouté
+            expenseCount: expenseCount,         // Ajouté
+            totalExpenseAmount: totalExpenseAmount, // Ajouté
             myShareTotal: myShareTotal,
             total_to_pay: balances.total_to_pay,
             total_to_receive: balances.total_to_receive,
-            debts: balances.debts
+            // debts: balances.debts // Optionnel, si besoin des détails
           };
         } catch (error) {
           console.error(`Error fetching details for event ${eventId}:`, error);
