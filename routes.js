@@ -19,6 +19,9 @@ const getDefaultBalances = () => {
   };
 };
 
+// balanceService is already an instance because of how it's exported
+const balanceServiceInstance = balanceService;
+
 module.exports = (db) => {
 
 // API pour rejoindre un événement par code et lier un participant à l'utilisateur connecté
@@ -77,6 +80,79 @@ router.post('/api/join-event', async (req, res) => {
       res.status(500).json({ error: "Erreur serveur lors de la récupération des participants" });
     }
   });
+
+  // Nouvelle route pour récupérer tous les détails des événements d'un utilisateur
+  router.get('/api/user-events-detailed', async (req, res) => {
+    try {
+      const { userId } = req.query;
+      if (!userId) {
+        return res.status(400).json({ error: 'User ID is required' });
+      }
+
+      // 1. Trouver tous les event_id auxquels l'utilisateur participe
+      const eventIdsResult = await db.query(
+        'SELECT DISTINCT event_id FROM participants WHERE user_id = ?',
+        [userId]
+      );
+
+      if (!eventIdsResult || eventIdsResult.length === 0) {
+        return res.json([]); // Retourner un tableau vide si l'utilisateur ne participe à aucun événement
+      }
+
+      const eventIds = eventIdsResult.map(row => row.event_id);
+
+      // 2. Pour chaque event_id, récupérer les détails nécessaires
+      const detailedEventsPromises = eventIds.map(async (eventId) => {
+        try {
+          // Récupérer les infos de base de l'événement
+          const eventInfoResult = await db.query(
+            'SELECT id, name, currency FROM events WHERE id = ?',
+            [eventId]
+          );
+          if (!eventInfoResult || eventInfoResult.length === 0) {
+            return null; // Ignorer si l'événement n'est pas trouvé
+          }
+          const eventInfo = eventInfoResult[0];
+
+          // Calculer myShareTotal
+          const shareQuery = `
+            SELECT COALESCE(SUM(ep.share_amount), 0) AS myShareTotal
+            FROM expense_participants ep
+            JOIN expenses e ON ep.expense_id = e.id
+            JOIN participants p ON ep.participant_id = p.id
+            WHERE e.event_id = ? AND p.user_id = ?
+          `;
+          const [shareRows] = await db.query(shareQuery, [eventId, userId]);
+          const myShareTotal = Number(shareRows?.myShareTotal ?? 0);
+
+          // Calculer les dettes et soldes
+          const balances = await balanceServiceInstance.calculateDebts(eventId, userId);
+
+          return {
+            id: eventInfo.id,
+            name: eventInfo.name,
+            currency: eventInfo.currency,
+            myShareTotal: myShareTotal,
+            total_to_pay: balances.total_to_pay,
+            total_to_receive: balances.total_to_receive,
+            debts: balances.debts
+          };
+        } catch (error) {
+          console.error(`Error fetching details for event ${eventId}:`, error);
+          return null; // Retourner null en cas d'erreur pour cet événement spécifique
+        }
+      });
+
+      const detailedEvents = (await Promise.all(detailedEventsPromises)).filter(event => event !== null);
+
+      res.json(detailedEvents);
+
+    } catch (error) {
+      console.error('Error fetching detailed user events:', error);
+      res.status(500).json({ error: 'Server error while fetching detailed user events' });
+    }
+  });
+
   // Get event details by ID
   router.get('/api/events/:eventId', async (req, res) => {
     try {
