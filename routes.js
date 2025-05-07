@@ -152,7 +152,7 @@ router.post('/api/join-event', async (req, res) => {
             myShareTotal: myShareTotal,
             total_to_pay: balances.total_to_pay,
             total_to_receive: balances.total_to_receive,
-            // debts: balances.debts // Optionnel, si besoin des détails
+            debts: balances.debts // Inclure les détails des dettes
           };
         } catch (error) {
           console.error(`Error fetching details for event ${eventId}:`, error);
@@ -253,8 +253,10 @@ router.post('/api/join-event', async (req, res) => {
       // Calculer les dettes entre participants
       try {
         const balances = await balanceService.calculateDebts(eventId, userId);
-        console.log(`[Event Details] Calculated balances for event: ${eventId}`);
-        event.debts = balances.debts;
+        console.log(`[Event Details] Calculated balances for event: ${eventId}`, balances);
+        // Assigner directement les dettes calculées, sans filtrage supplémentaire ici.
+        // Le service balanceService.js s'occupe déjà de marquer les dettes comme remboursées.
+        event.debts = balances.debts; 
         event.total_to_pay = balances.total_to_pay;
         event.total_to_receive = balances.total_to_receive;
       } catch (error) {
@@ -893,8 +895,9 @@ router.get('/api/debts/:userId', async (req, res) => {
         const userName = userParticipantResult[0].name;
         
         // Find debts where the user is the debtor (from)
+        // Inclure toutes les dettes, même celles avec un montant de 0 (complètement remboursées)
         const userDebts = balances.debts.filter(debt => 
-          debt.from === userName && debt.amount > 0
+          debt.from === userName
         );
         
         // Add event information to each debt

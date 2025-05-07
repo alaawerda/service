@@ -9,19 +9,28 @@ class BalanceService {
    */
   async calculateDebts(eventId, connectedUserId) {
     try {
-      // Récupérer tous les participants de l'événement
-      const participants = await db.query(
-        'SELECT id, name, user_id FROM participants WHERE event_id = ?',
-        [eventId]
-      );
-
-      // Récupérer toutes les dépenses de l'événement avec leurs participants
-      const expenses = await db.query(`
-        SELECT e.*, ep.participant_id, ep.share_amount, ep.he_participates
-        FROM expenses e
-        LEFT JOIN expense_participants ep ON e.id = ep.expense_id
-        WHERE e.event_id = ?
-      `, [eventId]);
+      console.log(`Calculating debts for event ${eventId} and user ${connectedUserId}`);
+      
+      // 1. Récupérer toutes les dépenses de l'événement avec leurs participants
+      const expenses = await this.getEventExpenses(eventId);
+      console.log(`Found ${expenses.length} expenses for event ${eventId}`);
+      
+      // 2. Récupérer tous les participants de l'événement
+      const participants = await this.getEventParticipants(eventId);
+      console.log(`Found ${participants.length} participants for event ${eventId}`);
+      console.log('Participants:', participants.map(p => ({ id: p.id, name: p.name, user_id: p.user_id })));
+      
+      // 3. Calculer les dettes entre participants
+      const debts = this.computeDebts(expenses, participants);
+      console.log(`Computed ${debts.length} raw debts:`, JSON.stringify(debts));
+      
+      // 4. Optimiser les transferts pour minimiser le nombre de transactions
+      const optimizedDebts = this.optimizeTransfers(debts, participants);
+      console.log(`Optimized to ${optimizedDebts.length} debts:`, JSON.stringify(optimizedDebts));
+      
+      // 5. Calculer le résumé pour l'utilisateur connecté
+      const userSummary = this.computeUserSummary(optimizedDebts, connectedUserId, participants);
+      console.log(`User summary:`, JSON.stringify(userSummary));
 
       // Récupérer tous les remboursements de l'événement
       const reimbursements = await db.query(`
@@ -35,39 +44,33 @@ class BalanceService {
       // Créer un objet pour stocker les dettes initiales par paire de participants
       const debtMap = new Map();
 
+      // Utiliser les dettes calculées par computeDebts pour initialiser debtMap
+      // 'debts' ici est le résultat de this.computeDebts(expenses, participants)
+      // qui contient des objets comme { from: 'NomDebiteur', to: 'NomCrediteur', amount: X }
+      debts.forEach(debt => {
+        const key = `${debt.from}-${debt.to}`;
+        debtMap.set(key, (debtMap.get(key) || 0) + debt.amount);
+      });
+
       // Créer un objet pour stocker les remboursements par paire de participants
       const reimbursementMap = new Map();
       const totalReimbursedMap = new Map(); // Nouveau map pour stocker le total des remboursements
 
-      // Initialiser les maps pour toutes les paires de participants possibles
+      // Initialiser les maps de remboursement pour toutes les paires de participants possibles
       participants.forEach(p1 => {
         participants.forEach(p2 => {
           if (p1.name !== p2.name) {
             const key = `${p1.name}-${p2.name}`;
-            const reverseKey = `${p2.name}-${p1.name}`;
-            reimbursementMap.set(key, 0);
-            reimbursementMap.set(reverseKey, 0);
-            totalReimbursedMap.set(key, 0);
-            totalReimbursedMap.set(reverseKey, 0);
+            // Initialiser reimbursementMap et totalReimbursedMap pour toutes les paires
+            // afin d'éviter les undefined plus tard si une paire n'a pas de remboursement.
+            if (!reimbursementMap.has(key)) {
+              reimbursementMap.set(key, 0);
+            }
+            if (!totalReimbursedMap.has(key)) {
+              totalReimbursedMap.set(key, 0);
+            }
           }
         });
-      });
-
-      // Calculer les dettes initiales à partir des dépenses
-      expenses.forEach(expense => {
-        if (!expense.participant_id) return;
-
-        const participant = participants.find(p => p.id === expense.participant_id);
-        if (!participant) return;
-
-        // Si le participant n'est pas celui qui a payé, il doit de l'argent
-        if (participant.name !== expense.paid_by) {
-          const key = `${participant.name}-${expense.paid_by}`;
-          if (!debtMap.has(key)) {
-            debtMap.set(key, 0);
-          }
-          debtMap.set(key, debtMap.get(key) + parseFloat(expense.share_amount));
-        }
       });
 
       // Calculer les remboursements par paire de participants
@@ -89,15 +92,46 @@ class BalanceService {
       });
 
       // Calculer les dettes finales en soustrayant les remboursements
-      const debts = [];
+      const finalDebts = [];
       const userParticipant = participants.find(p => p.user_id === parseInt(connectedUserId));
       
+      console.log(`Looking for user ${connectedUserId} in participants`);
       if (!userParticipant) {
-        return {
-          debts: [],
-          total_to_pay: 0,
-          total_to_receive: 0
-        };
+        console.log(`User ${connectedUserId} not found in participants, returning empty debts`);
+        // Si l'utilisateur n'est pas trouvé, essayons de le trouver par son username
+        const userQuery = `SELECT username FROM users WHERE id = ?`;
+        const userResults = await db.query(userQuery, [connectedUserId]);
+        
+        if (userResults && userResults.length > 0) {
+          const username = userResults[0].username;
+          console.log(`Found username ${username} for user ${connectedUserId}`);
+          
+          // Chercher un participant avec ce nom d'utilisateur
+          const participantByName = participants.find(p => p.name === username);
+          
+          if (participantByName) {
+            console.log(`Found participant by name ${username}, updating user_id`);
+            // Mettre à jour le participant avec l'ID utilisateur
+            await db.query('UPDATE participants SET user_id = ? WHERE id = ?', [connectedUserId, participantByName.id]);
+            // Continuer avec ce participant
+            participantByName.user_id = parseInt(connectedUserId);
+            userParticipant = participantByName;
+          } else {
+            console.log(`No participant found with name ${username}`);
+            return {
+              debts: [],
+              total_to_pay: 0,
+              total_to_receive: 0
+            };
+          }
+        } else {
+          console.log(`No username found for user ${connectedUserId}`);
+          return {
+            debts: [],
+            total_to_pay: 0,
+            total_to_receive: 0
+          };
+        }
       }
 
       // Parcourir toutes les paires de participants possibles
@@ -112,7 +146,7 @@ class BalanceService {
             // Si la dette est supérieure aux remboursements
             if (debtAmount > reimbursementAmount) {
               const remainingAmount = debtAmount - reimbursementAmount;
-              debts.push({
+              finalDebts.push({
                 from: debtor.name,
                 to: creditor.name,
                 amount: remainingAmount,
@@ -124,7 +158,7 @@ class BalanceService {
               });
             } else if (reimbursementAmount > 0) {
               // Si la dette a été complètement remboursée, on l'ajoute quand même pour l'affichage
-              debts.push({
+              finalDebts.push({
                 from: debtor.name,
                 to: creditor.name,
                 amount: 0,
@@ -143,7 +177,7 @@ class BalanceService {
       let total_to_pay = 0;
       let total_to_receive = 0;
 
-      debts.forEach(debt => {
+      finalDebts.forEach(debt => {
         if (debt.from === userParticipant.name) {
           total_to_pay += debt.amount;
         }
@@ -152,8 +186,20 @@ class BalanceService {
         }
       });
 
+      console.log(`Returning ${finalDebts.length} debts, total_to_pay: ${total_to_pay}, total_to_receive: ${total_to_receive}`);
+      
+      // Si aucune dette n'est trouvée mais que des dettes optimisées existent, utiliser celles-ci
+      if (finalDebts.length === 0 && optimizedDebts.length > 0) {
+        console.log(`No final debts found but ${optimizedDebts.length} optimized debts exist, using those instead`);
+        return {
+          debts: optimizedDebts,
+          total_to_pay: userSummary ? userSummary.total_to_pay : 0,
+          total_to_receive: userSummary ? userSummary.total_to_receive : 0
+        };
+      }
+      
       return {
-        debts,
+        debts: finalDebts,
         total_to_pay,
         total_to_receive
       };
@@ -301,6 +347,64 @@ class BalanceService {
   }
 
   /**
+   * Optimise les transferts pour minimiser le nombre de transactions
+   * @param {Array} debts - Liste des dettes nettes entre participants
+   * @param {Array} participants - Liste des participants
+   * @returns {Array} Liste optimisée des dettes
+   */
+  optimizeTransfers(debts, participants) {
+    console.log('Optimizing transfers between specific participants only');
+    
+    // Créer une structure pour stocker les dettes entre chaque paire de participants
+    const debtsByPair = new Map();
+    
+    // Regrouper les dettes par paire de participants
+    debts.forEach(debt => {
+      const key = `${debt.from}-${debt.to}`;
+      if (!debtsByPair.has(key)) {
+        debtsByPair.set(key, []);
+      }
+      debtsByPair.get(key).push(debt);
+    });
+    
+    // Pour chaque paire, simplifier les dettes en une seule dette
+    const simplifiedDebts = [];
+    
+    debtsByPair.forEach((pairDebts, key) => {
+      const [from, to] = key.split('-');
+      
+      // Calculer le montant total des dettes pour cette paire
+      const totalAmount = pairDebts.reduce((sum, debt) => sum + debt.amount, 0);
+      
+      // Récupérer les informations de remboursement si elles existent dans la première dette
+      const firstDebt = pairDebts[0];
+      const reimbursedAmount = firstDebt?.reimbursedAmount || 0;
+      const totalReimbursed = firstDebt?.totalReimbursed || 0;
+      const isFullyReimbursed = firstDebt?.isFullyReimbursed || false;
+      
+      // Si le montant est significatif ou s'il y a eu des remboursements, ajouter une dette simplifiée
+      if (totalAmount > 0.01 || reimbursedAmount > 0) {
+        // Calculer le montant restant après remboursements
+        const remainingAmount = Math.max(0, totalAmount - reimbursedAmount);
+        
+        simplifiedDebts.push({
+          from,
+          to,
+          amount: parseFloat(remainingAmount.toFixed(2)),
+          currency: firstDebt?.currency || 'EUR',
+          originalAmount: totalAmount,
+          reimbursedAmount: reimbursedAmount,
+          totalReimbursed: totalReimbursed,
+          isFullyReimbursed: remainingAmount <= 0 && reimbursedAmount > 0
+        });
+      }
+    });
+    
+    console.log(`Simplified ${debts.length} debts to ${simplifiedDebts.length} debts between specific participants`);
+    return simplifiedDebts;
+  }
+  
+  /**
    * Calcule le résumé pour l'utilisateur connecté
    * @param {Array} debts - Liste des dettes
    * @param {number} connectedUserId - ID de l'utilisateur connecté
@@ -322,21 +426,32 @@ class BalanceService {
     const debit = [];
     
     debts.forEach(debt => {
+      // Utiliser le montant restant après remboursements (amount) au lieu du montant total
       const amount = parseFloat(debt.amount.toFixed(2));
+      const originalAmount = debt.originalAmount ? parseFloat(debt.originalAmount.toFixed(2)) : amount;
+      const reimbursedAmount = debt.reimbursedAmount ? parseFloat(debt.reimbursedAmount.toFixed(2)) : 0;
       
       if (debt.from === userName) {
+        // Ajouter seulement le montant restant à payer
         totalToPay += amount;
         debit.push({
           to: debt.to,
-          amount: amount
+          amount: amount,
+          originalAmount: originalAmount,
+          reimbursedAmount: reimbursedAmount,
+          isFullyReimbursed: debt.isFullyReimbursed || false
         });
       }
       
       if (debt.to === userName) {
+        // Ajouter seulement le montant restant à recevoir
         totalToReceive += amount;
         credit.push({
           from: debt.from,
-          amount: amount
+          amount: amount,
+          originalAmount: originalAmount,
+          reimbursedAmount: reimbursedAmount,
+          isFullyReimbursed: debt.isFullyReimbursed || false
         });
       }
     });
