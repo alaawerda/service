@@ -32,13 +32,13 @@ class BalanceService {
       const userSummary = this.computeUserSummary(optimizedDebts, connectedUserId, participants);
       console.log(`User summary:`, JSON.stringify(userSummary));
 
-      // Récupérer tous les remboursements de l'événement
+      // Récupérer tous les remboursements de l'événement avec leur statut
       const reimbursements = await db.query(`
-        SELECT r.*, pd.name as debtor_name, pc.name as creditor_name
+        SELECT r.*, pd.name as debtor_name, pc.name as creditor_name, r.status, r.id
         FROM reimbursements r
         JOIN participants pd ON r.debtor_id = pd.id
         JOIN participants pc ON r.creditor_id = pc.id
-        WHERE r.event_id = ? AND r.status = 'completed'
+        WHERE r.event_id = ?
       `, [eventId]);
 
       // Créer un objet pour stocker les dettes initiales par paire de participants
@@ -55,6 +55,7 @@ class BalanceService {
       // Créer un objet pour stocker les remboursements par paire de participants
       const reimbursementMap = new Map();
       const totalReimbursedMap = new Map(); // Nouveau map pour stocker le total des remboursements
+      const reimbursementStatusMap = new Map(); // Map pour stocker les statuts des remboursements
 
       // Initialiser les maps de remboursement pour toutes les paires de participants possibles
       participants.forEach(p1 => {
@@ -88,7 +89,22 @@ class BalanceService {
         if (!reimbursementMap.has(key)) {
           reimbursementMap.set(key, 0);
         }
-        reimbursementMap.set(key, reimbursementMap.get(key) + parseFloat(reimbursement.amount));
+        
+        // Ajouter le statut du remboursement à la map des statuts
+        if (!reimbursementStatusMap.has(key)) {
+          reimbursementStatusMap.set(key, []);
+        }
+        reimbursementStatusMap.get(key).push({
+          id: reimbursement.id,
+          amount: parseFloat(reimbursement.amount),
+          status: reimbursement.status,
+          date: reimbursement.date || reimbursement.timestamp
+        });
+        
+        // N'ajouter au montant remboursé que si le statut est 'completed'
+        if (reimbursement.status === 'completed') {
+          reimbursementMap.set(key, reimbursementMap.get(key) + parseFloat(reimbursement.amount));
+        }
       });
 
       // Calculer les dettes finales en soustrayant les remboursements
@@ -146,6 +162,9 @@ class BalanceService {
             // Si la dette est supérieure aux remboursements
             if (debtAmount > reimbursementAmount) {
               const remainingAmount = debtAmount - reimbursementAmount;
+              // Récupérer les statuts des remboursements pour cette paire
+              const reimbursementStatuses = reimbursementStatusMap.get(key) || [];
+              
               finalDebts.push({
                 from: debtor.name,
                 to: creditor.name,
@@ -154,10 +173,17 @@ class BalanceService {
                 reimbursedAmount: reimbursementAmount,
                 totalReimbursed: totalReimbursed,
                 isFullyReimbursed: false,
-                currency: expenses[0]?.currency || 'EUR'
+                currency: expenses[0]?.currency || 'EUR',
+                debtor_id: debtor.user_id, // Ajout de l'ID du débiteur
+                creditor_id: creditor.user_id, // Ajout de l'ID du créditeur
+                reimbursementStatuses: reimbursementStatuses // Ajout des statuts des remboursements
               });
             } else if (reimbursementAmount > 0) {
               // Si la dette a été complètement remboursée, on l'ajoute quand même pour l'affichage
+              // Récupérer les statuts des remboursements pour cette paire
+              const key = `${debtor.name}-${creditor.name}`;
+              const reimbursementStatuses = reimbursementStatusMap.get(key) || [];
+              
               finalDebts.push({
                 from: debtor.name,
                 to: creditor.name,
@@ -166,7 +192,10 @@ class BalanceService {
                 reimbursedAmount: reimbursementAmount,
                 totalReimbursed: totalReimbursed,
                 isFullyReimbursed: true,
-                currency: expenses[0]?.currency || 'EUR'
+                currency: expenses[0]?.currency || 'EUR',
+                debtor_id: debtor.user_id, // Ajout de l'ID du débiteur
+                creditor_id: creditor.user_id, // Ajout de l'ID du créditeur
+                reimbursementStatuses: reimbursementStatuses // Ajout des statuts des remboursements
               });
             }
           }
@@ -191,8 +220,19 @@ class BalanceService {
       // Si aucune dette n'est trouvée mais que des dettes optimisées existent, utiliser celles-ci
       if (finalDebts.length === 0 && optimizedDebts.length > 0) {
         console.log(`No final debts found but ${optimizedDebts.length} optimized debts exist, using those instead`);
+        
+        // Ajouter les statuts des remboursements aux dettes optimisées
+        const optimizedDebtsWithStatus = optimizedDebts.map(debt => {
+          const key = `${debt.from}-${debt.to}`;
+          const reimbursementStatuses = reimbursementStatusMap.get(key) || [];
+          return {
+            ...debt,
+            reimbursementStatuses
+          };
+        });
+        
         return {
-          debts: optimizedDebts,
+          debts: optimizedDebtsWithStatus,
           total_to_pay: userSummary ? userSummary.total_to_pay : 0,
           total_to_receive: userSummary ? userSummary.total_to_receive : 0
         };

@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS reimbursements (
   amount DECIMAL(10, 2) NOT NULL,
   currency VARCHAR(3) NOT NULL,
   date TIMESTAMP DEFAULT current_timestamp(),
-  status ENUM('pending', 'completed', 'disputed') DEFAULT 'pending',
+  status ENUM('pending', 'completed', 'disputed','rejected') DEFAULT 'pending',
   created_at TIMESTAMP DEFAULT current_timestamp(),
   FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
   FOREIGN KEY (debtor_id) REFERENCES participants(id) ON DELETE CASCADE,
@@ -87,3 +87,19 @@ CREATE INDEX idx_reimbursements_event ON reimbursements(event_id);
 CREATE INDEX idx_reimbursements_debtor ON reimbursements(debtor_id);
 CREATE INDEX idx_reimbursements_creditor ON reimbursements(creditor_id);
 CREATE INDEX idx_reimbursements_status ON reimbursements(status);
+
+-- Create banking_info table to store user banking information
+CREATE TABLE IF NOT EXISTS banking_info (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  type ENUM('rib', 'iban', 'paypal', 'wise', 'revolut', 'other') NOT NULL,
+  account_details TEXT NOT NULL,
+  other_name VARCHAR(255),
+  is_default BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT current_timestamp(),
+  updated_at TIMESTAMP DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Add indexes for better query performance
+CREATE INDEX idx_banking_info_user ON banking_info(user_id);

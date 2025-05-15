@@ -24,6 +24,366 @@ const balanceServiceInstance = balanceService;
 
 module.exports = (db) => {
 
+// Routes pour les informations bancaires
+
+// GET: Récupérer toutes les informations bancaires d'un utilisateur
+router.get('/api/banking-info', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    const bankingInfoResults = await db.query(
+      'SELECT id, type, account_details, other_name, is_default FROM banking_info WHERE user_id = ? ORDER BY is_default DESC, created_at DESC',
+      [userId]
+    );
+
+    res.json(bankingInfoResults || []);
+  } catch (error) {
+    console.error('Error fetching banking info:', error);
+    res.status(500).json({ error: 'Server error while fetching banking information' });
+  }
+});
+
+// POST: Ajouter une nouvelle information bancaire
+router.post('/api/banking-info', async (req, res) => {
+  try {
+    const { userId, type, accountDetails, otherName, isDefault } = req.body;
+    
+    if (!userId || !type || !accountDetails) {
+      return res.status(400).json({ error: 'User ID, type, and account details are required' });
+    }
+
+    // Si isDefault est true, mettre les autres entrées à false
+    if (isDefault) {
+      await db.query('UPDATE banking_info SET is_default = false WHERE user_id = ?', [userId]);
+    }
+
+    const result = await db.query(
+      'INSERT INTO banking_info (user_id, type, account_details, other_name, is_default) VALUES (?, ?, ?, ?, ?)',
+      [userId, type, accountDetails, otherName || null, isDefault || false]
+    );
+
+    res.json({ 
+      id: result.insertId,
+      success: true, 
+      message: 'Banking information added successfully' 
+    });
+  } catch (error) {
+    console.error('Error adding banking info:', error);
+    res.status(500).json({ error: 'Server error while adding banking information' });
+  }
+});
+
+// PUT: Mettre à jour une information bancaire existante
+router.put('/api/banking-info/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { accountDetails, otherName, isDefault } = req.body;
+    const { userId } = req.query;
+
+    if (!id || !userId) {
+      return res.status(400).json({ error: 'Banking info ID and User ID are required' });
+    }
+
+    // Vérifier que l'information bancaire appartient à l'utilisateur
+    const ownerCheckResult = await db.query('SELECT user_id FROM banking_info WHERE id = ?', [id]);
+    if (!ownerCheckResult || ownerCheckResult.length === 0) {
+      return res.status(404).json({ error: 'Banking information not found' });
+    }
+    if (ownerCheckResult[0].user_id != userId) {
+      return res.status(403).json({ error: 'You do not have permission to update this banking information' });
+    }
+
+    // Si isDefault est true, mettre les autres entrées à false
+    if (isDefault) {
+      await db.query('UPDATE banking_info SET is_default = false WHERE user_id = ?', [userId]);
+    }
+
+    await db.query(
+      'UPDATE banking_info SET account_details = ?, other_name = ?, is_default = ? WHERE id = ?',
+      [accountDetails, otherName || null, isDefault || false, id]
+    );
+
+    res.json({ success: true, message: 'Banking information updated successfully' });
+  } catch (error) {
+    console.error('Error updating banking info:', error);
+    res.status(500).json({ error: 'Server error while updating banking information' });
+  }
+});
+
+// DELETE: Supprimer une information bancaire
+router.delete('/api/banking-info/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId } = req.query;
+
+    if (!id || !userId) {
+      return res.status(400).json({ error: 'Banking info ID and User ID are required' });
+    }
+
+    // Vérifier que l'information bancaire appartient à l'utilisateur
+    const ownerCheckResult = await db.query('SELECT user_id, is_default FROM banking_info WHERE id = ?', [id]);
+    if (!ownerCheckResult || ownerCheckResult.length === 0) {
+      return res.status(404).json({ error: 'Banking information not found' });
+    }
+    if (ownerCheckResult[0].user_id != userId) {
+      return res.status(403).json({ error: 'You do not have permission to delete this banking information' });
+    }
+
+    await db.query('DELETE FROM banking_info WHERE id = ?', [id]);
+
+    // Si l'entrée supprimée était celle par défaut, définir une autre entrée comme défaut si elle existe
+    if (ownerCheckResult[0].is_default) {
+      const remainingEntries = await db.query('SELECT id FROM banking_info WHERE user_id = ? LIMIT 1', [userId]);
+      if (remainingEntries && remainingEntries.length > 0) {
+        await db.query('UPDATE banking_info SET is_default = true WHERE id = ?', [remainingEntries[0].id]);
+      }
+    }
+
+    res.json({ success: true, message: 'Banking information deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting banking info:', error);
+    res.status(500).json({ error: 'Server error while deleting banking information' });
+  }
+});
+
+// Routes pour les demandes de remboursement
+
+// GET: Récupérer toutes les demandes de remboursement pour un utilisateur (reçues et envoyées)
+router.get('/api/reimbursement-requests', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+    
+    // Récupérer les demandes où l'utilisateur est le demandeur ou le débiteur
+    const requestsQuery = `
+      SELECT rr.*, 
+             e.name as event_name, 
+             requester.username as requester_username,
+             debtor.username as debtor_username,
+             CASE 
+               WHEN rr.requester_id = ? THEN 'sent' 
+               WHEN rr.debtor_id = ? THEN 'received' 
+             END as direction
+      FROM reimbursement_requests rr
+      JOIN events e ON rr.event_id = e.id
+      JOIN users requester ON rr.requester_id = requester.id
+      JOIN users debtor ON rr.debtor_id = debtor.id
+      WHERE rr.requester_id = ? OR rr.debtor_id = ?
+      ORDER BY rr.created_at DESC
+    `;
+    
+    const requests = await db.query(requestsQuery, [userId, userId, userId, userId]);
+    
+    // Récupérer les informations bancaires pour les méthodes de paiement
+    // qui correspondent au type d'information bancaire (en minuscules)
+    const bankingInfos = await db.query(
+      'SELECT id, type, account_details, other_name, is_default FROM banking_info WHERE user_id = ?',
+      [userId]
+    );
+    
+    // Enrichir les demandes avec les informations bancaires correspondantes
+    const enrichedRequests = requests.map(request => {
+      const result = { ...request };
+      
+      // Si l'utilisateur est le demandeur (requester) et qu'il a une méthode de paiement spécifiée
+      if (request.requester_id == userId && request.payment_method) {
+        // Rechercher une information bancaire dont le type correspond à la méthode de paiement (en minuscules)
+        const matchingBankingInfo = bankingInfos.find(info => 
+          info.type.toLowerCase() === request.payment_method.toLowerCase() ||
+          (info.type === 'other' && info.other_name && 
+           info.other_name.toLowerCase() === request.payment_method.toLowerCase())
+        );
+        
+        if (matchingBankingInfo) {
+          result.banking_info = {
+            id: matchingBankingInfo.id,
+            type: matchingBankingInfo.type,
+            account_details: matchingBankingInfo.account_details,
+            other_name: matchingBankingInfo.other_name,
+            is_default: matchingBankingInfo.is_default
+          };
+        }
+      }
+      
+      return result;
+    });
+    
+    res.json(enrichedRequests);
+  } catch (error) {
+    console.error('Error fetching reimbursement requests:', error);
+    res.status(500).json({ error: 'Server error while fetching reimbursement requests' });
+  }
+});
+
+// POST: Créer une nouvelle demande de remboursement
+router.post('/api/reimbursement-requests', async (req, res) => {
+  try {
+    const { eventId, debtorId, amount, currency, message, paymentMethod, paymentDetails } = req.body;
+    const { userId } = req.query;
+    
+    if (!userId || !eventId || !debtorId || !amount || !currency) {
+      return res.status(400).json({ 
+        error: 'User ID, event ID, debtor ID, amount, and currency are required'
+      });
+    }
+    
+    // Vérifier que l'utilisateur et le débiteur existent
+    const userCheck = await db.query('SELECT id FROM users WHERE id = ?', [userId]);
+    if (!userCheck || userCheck.length === 0) {
+      return res.status(404).json({ error: 'Requester not found' });
+    }
+    
+    const debtorCheck = await db.query('SELECT id FROM users WHERE id = ?', [debtorId]);
+    if (!debtorCheck || debtorCheck.length === 0) {
+      return res.status(404).json({ error: 'Debtor not found' });
+    }
+    
+    // Vérifier que l'événement existe
+    const eventCheck = await db.query('SELECT id FROM events WHERE id = ?', [eventId]);
+    if (!eventCheck || eventCheck.length === 0) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+    
+    // Insérer la demande de remboursement
+    const result = await db.query(
+      'INSERT INTO reimbursement_requests (event_id, requester_id, debtor_id, amount, currency, message, payment_method, payment_details, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [eventId, userId, debtorId, amount, currency, message || null, paymentMethod || null, paymentDetails || null, 'pending']
+    );
+    
+    res.status(201).json({ 
+      id: result.insertId,
+      success: true, 
+      message: 'Reimbursement request created successfully' 
+    });
+  } catch (error) {
+    console.error('Error creating reimbursement request:', error);
+    res.status(500).json({ error: 'Server error while creating reimbursement request' });
+  }
+});
+
+// PUT: Mettre à jour le statut d'une demande de remboursement (approuver, rejeter, marquer comme complétée)
+router.put('/api/reimbursement-requests/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, paymentDetails } = req.body;
+    const { userId } = req.query;
+    
+    if (!id || !userId || !status) {
+      return res.status(400).json({ error: 'Request ID, User ID, and status are required' });
+    }
+    
+    // Vérifier que le statut est valide
+    if (!['pending', 'approved', 'rejected', 'completed'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    
+    // Vérifier que la demande existe et que l'utilisateur est autorisé à la modifier
+    const requestCheck = await db.query(
+      'SELECT requester_id, debtor_id FROM reimbursement_requests WHERE id = ?',
+      [id]
+    );
+    
+    if (!requestCheck || requestCheck.length === 0) {
+      return res.status(404).json({ error: 'Reimbursement request not found' });
+    }
+    
+    const { requester_id, debtor_id } = requestCheck[0];
+    
+    // Vérifier les permissions selon le statut à mettre à jour
+    if (status === 'approved' || status === 'rejected') {
+      // Seul le débiteur peut approuver ou rejeter une demande
+      if (userId != debtor_id) {
+        return res.status(403).json({ 
+          error: 'Only the debtor can approve or reject a reimbursement request' 
+        });
+      }
+    } else if (status === 'completed') {
+      // Seul le demandeur peut marquer une demande comme complétée
+      if (userId != requester_id) {
+        return res.status(403).json({ 
+          error: 'Only the requester can mark a reimbursement request as completed' 
+        });
+      }
+    }
+    
+    // Mise à jour du statut et éventuellement des détails de paiement
+    let query = 'UPDATE reimbursement_requests SET status = ?';
+    let params = [status];
+    
+    if (paymentDetails && status === 'approved') {
+      query += ', payment_details = ?';
+      params.push(paymentDetails);
+    }
+    
+    query += ' WHERE id = ?';
+    params.push(id);
+    
+    await db.query(query, params);
+    
+    res.json({ 
+      success: true, 
+      message: `Reimbursement request ${status}` 
+    });
+  } catch (error) {
+    console.error('Error updating reimbursement request:', error);
+    res.status(500).json({ error: 'Server error while updating reimbursement request' });
+  }
+});
+
+// DELETE: Supprimer une demande de remboursement (uniquement si elle est encore en attente)
+router.delete('/api/reimbursement-requests/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId } = req.query;
+    
+    if (!id || !userId) {
+      return res.status(400).json({ error: 'Request ID and User ID are required' });
+    }
+    
+    // Vérifier que la demande existe et qu'elle est encore en attente
+    const requestCheck = await db.query(
+      'SELECT requester_id, status FROM reimbursement_requests WHERE id = ?',
+      [id]
+    );
+    
+    if (!requestCheck || requestCheck.length === 0) {
+      return res.status(404).json({ error: 'Reimbursement request not found' });
+    }
+    
+    const { requester_id, status } = requestCheck[0];
+    
+    // Vérifier que l'utilisateur est le demandeur
+    if (userId != requester_id) {
+      return res.status(403).json({ 
+        error: 'Only the requester can delete a reimbursement request' 
+      });
+    }
+    
+    // Vérifier que la demande est encore en attente
+    if (status !== 'pending') {
+      return res.status(400).json({ 
+        error: 'Only pending reimbursement requests can be deleted' 
+      });
+    }
+    
+    await db.query('DELETE FROM reimbursement_requests WHERE id = ?', [id]);
+    
+    res.json({ 
+      success: true, 
+      message: 'Reimbursement request deleted successfully' 
+    });
+  } catch (error) {
+    console.error('Error deleting reimbursement request:', error);
+    res.status(500).json({ error: 'Server error while deleting reimbursement request' });
+  }
+});
+
 // API pour rejoindre un événement par code et lier un participant à l'utilisateur connecté
 router.post('/api/join-event', async (req, res) => {
   try {
@@ -152,7 +512,9 @@ router.post('/api/join-event', async (req, res) => {
             myShareTotal: myShareTotal,
             total_to_pay: balances.total_to_pay,
             total_to_receive: balances.total_to_receive,
-            debts: balances.debts // Inclure les détails des dettes
+            debts: balances.debts ,// Inclure les détails des dettes
+            status : balances.status,
+            id_reimboursment : balances.id
           };
         } catch (error) {
           console.error(`Error fetching details for event ${eventId}:`, error);
@@ -966,7 +1328,7 @@ router.post('/api/reimbursements', async (req, res) => {
     // Insérer le remboursement avec le statut 'completed'
     const result = await db.query(
       'INSERT INTO reimbursements (event_id, debtor_id, creditor_id, amount, date, status, currency) VALUES (?, ?, ?, ?, NOW(), ?, ?)',
-      [event_id, debtor.id, creditor.id, amount, 'completed', currency]
+      [event_id, debtor.id, creditor.id, amount, 'pending', currency]
     );
 
     res.status(201).json({ id: result.insertId });
@@ -984,7 +1346,7 @@ router.patch('/api/reimbursements/:id/status', async (req, res) => {
     
     // Get the reimbursement details
     const reimbursementQuery = `
-      SELECT r.*, p.user_id as creditor_user_id
+      SELECT r.*, p.user_id as creditor_user_id 
       FROM reimbursements r
       JOIN participants p ON r.creditor_id = p.id
       WHERE r.id = ?

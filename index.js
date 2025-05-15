@@ -7,6 +7,7 @@ const eventRoutes = require('./routes/eventRoutes');
 const db = require('./db');
 const routes = require('./routes')(db);
 const authRoutes = require('./routes/authRoutes')(db);
+const reimbursementRoutes = require('./routes/reimbursementRoutes')(db);
 
 // Import our custom CORS middleware
 const { corsMiddleware, additionalCorsHeaders, optionsCorsHandler } = require('./middleware/corsMiddleware');
@@ -37,6 +38,7 @@ console.log('MySQL pool created and ready for connections');
 // Initialize routes
 app.use(routes);
 app.use(authRoutes);
+app.use(reimbursementRoutes);
 
 app.use(session({
   secret: 'your-secret-key',
