@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Redirection vers WeCount</title>
+    <title>Redirect to WeCount</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -49,13 +49,13 @@
         <div class="logo">
             <h1>WeCount</h1>
         </div>
-        <h2>Ouvrir l'application WeCount</h2>
-        <p>Cliquez sur le bouton ci-dessous pour rejoindre l'événement</p>
+        <h2>Open WeCount App</h2>
+        <p>Click the button below to join the event</p>
         
-        <a href="#" class="btn" id="openApp">Rejoindre l'événement</a>
+        <a href="#" class="btn" id="openApp">Join Event</a>
         
         <div class="fallback">
-            <p>Si l'application ne s'ouvre pas automatiquement, veuillez vérifier que vous avez bien installé WeCount sur votre appareil.</p>
+            <p>If the app doesn't open automatically, please make sure you have WeCount installed on your device.</p>
             <p id="storeLink"></p>
         </div>
     </div>
@@ -96,10 +96,10 @@
                 window.location.href = deepLinkUrl;
             });
             
-            // Message sous le bouton montrant le code
+            // Message showing the event code below the button
             if (eventCode) {
                 var codeDisplay = document.createElement('p');
-                codeDisplay.innerHTML = 'Code de l\'événement : <strong>' + eventCode + '</strong>';
+                codeDisplay.innerHTML = 'Event code: <strong>' + eventCode + '</strong>';
                 openAppBtn.parentNode.insertBefore(codeDisplay, openAppBtn.nextSibling);
             }
             
@@ -110,9 +110,9 @@
 
             // Lien vers le store approprié
             if (/android/i.test(userAgent)) {
-                storeLink.innerHTML = 'Vous pouvez <a href="https://play.google.com/store/apps/details?id=com.werdaalaa.test">télécharger l\'application sur Google Play</a>';
+                storeLink.innerHTML = 'You can <a href="https://play.google.com/store/apps/details?id=com.werdaalaa.test">download the app from Google Play</a>';
             } else if (/iPad|iPhone|iPod/.test(userAgent) && !window.MSStream) {
-                storeLink.innerHTML = 'Vous pouvez <a href="#">télécharger l\'application sur l\'App Store</a>';
+                storeLink.innerHTML = 'You can <a href="#">download the app from the App Store</a>';
             }
         });
     </script>
