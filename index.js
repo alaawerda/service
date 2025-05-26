@@ -10,7 +10,7 @@ const routes = require('./routes')(db);
 const authRoutes = require('./routes/authRoutes')(db);
 const reimbursementRoutes = require('./routes/reimbursementRoutes')(db);
 
-// Import our custom CORS middleware
+// Import our custom CORS middleware 123
 const { corsMiddleware, additionalCorsHeaders, optionsCorsHandler } = require('./middleware/corsMiddleware');
 
 // Configuration des variables d'environnement pour Google OAuth
@@ -19,7 +19,7 @@ process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || 'VOTRE_GO
 
 const port = 8081;
 
-// Apply CORS middleware (should come before other middleware)
+// Apply CORS middleware (should come before other middleware)123
 app.use(corsMiddleware);
 
 // Handle preflight OPTIONS requests
