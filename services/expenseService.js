@@ -2,7 +2,7 @@ const db = require('../db');
 
 class ExpenseService {
   async updateExpense(expenseId, expenseData) {
-    const { description, amount, event_id, paid_by, created_date, split_type, currency, participants } = expenseData;
+    const { description, amount, event_id, paid_by, created_date, split_type, currency, participants, receipt_image } = expenseData;
     // Ensure created_date is in YYYY-MM-DD format for MySQL DATE type
     let formattedCreatedDate = created_date;
     if (created_date) {
@@ -24,10 +24,10 @@ class ExpenseService {
       // Start transaction
       connection = await db.beginTransaction();
 
-      // Update expense details
+      // Update expense details including receipt_image
       await db.query(
-        'UPDATE expenses SET description = ?, amount = ?, paid_by = ?, created_date = ?, split_type = ? WHERE id = ?',
-        [description, amount, paid_by, formattedCreatedDate, split_type, expenseId]
+        'UPDATE expenses SET description = ?, amount = ?, paid_by = ?, created_date = ?, split_type = ?, receipt_image = ? WHERE id = ?',
+        [description, amount, paid_by, formattedCreatedDate, split_type, receipt_image, expenseId]
       );
 
       // Normaliser les données des participants pour assurer la cohérence

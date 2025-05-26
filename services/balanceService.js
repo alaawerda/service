@@ -18,235 +18,362 @@ class BalanceService {
       // 2. Récupérer tous les participants de l'événement
       const participants = await this.getEventParticipants(eventId);
       console.log(`Found ${participants.length} participants for event ${eventId}`);
-      console.log('Participants:', participants.map(p => ({ id: p.id, name: p.name, user_id: p.user_id })));
       
-      // 3. Calculer les dettes entre participants
+      // 3. Calculer les dettes optimisées entre participants
       const debts = this.computeDebts(expenses, participants);
-      console.log(`Computed ${debts.length} raw debts:`, JSON.stringify(debts));
+      console.log(`Computed ${debts.length} optimized debts:`, JSON.stringify(debts));
       
-      // 4. Optimiser les transferts pour minimiser le nombre de transactions
-      const optimizedDebts = this.optimizeTransfers(debts, participants);
-      console.log(`Optimized to ${optimizedDebts.length} debts:`, JSON.stringify(optimizedDebts));
-      
-      // 5. Calculer le résumé pour l'utilisateur connecté
-      const userSummary = this.computeUserSummary(optimizedDebts, connectedUserId, participants);
-      console.log(`User summary:`, JSON.stringify(userSummary));
-
-      // Récupérer tous les remboursements de l'événement avec leur statut
+      // 4. Récupérer tous les remboursements de l'événement avec leur statut
       const reimbursements = await db.query(`
-        SELECT r.*, pd.name as debtor_name, pc.name as creditor_name, r.status, r.id
+        SELECT 
+          r.*,
+          pd.name as debtor_name,
+          pc.name as creditor_name,
+          r.status,
+          r.id,
+          r.amount,
+          r.date,
+          r.created_at,
+          r.debtor_id,
+          r.creditor_id,
+          r.event_id
         FROM reimbursements r
         JOIN participants pd ON r.debtor_id = pd.id
         JOIN participants pc ON r.creditor_id = pc.id
         WHERE r.event_id = ?
+        ORDER BY r.date ASC, r.created_at ASC
       `, [eventId]);
 
-      // Créer un objet pour stocker les dettes initiales par paire de participants
-      const debtMap = new Map();
+      console.log('Tous les remboursements trouvés:', JSON.stringify(reimbursements, null, 2));
+      console.log(`Nombre total de remboursements: ${reimbursements.length}`);
 
-      // Utiliser les dettes calculées par computeDebts pour initialiser debtMap
-      // 'debts' ici est le résultat de this.computeDebts(expenses, participants)
-      // qui contient des objets comme { from: 'NomDebiteur', to: 'NomCrediteur', amount: X }
-      debts.forEach(debt => {
-        const key = `${debt.from}-${debt.to}`;
-        debtMap.set(key, (debtMap.get(key) || 0) + debt.amount);
-      });
+      // 5. Appliquer les remboursements aux dettes optimisées
+      const finalDebts = this.applyReimbursements(debts, reimbursements, participants, expenses);
 
-      // Créer un objet pour stocker les remboursements par paire de participants
-      const reimbursementMap = new Map();
-      const totalReimbursedMap = new Map(); // Nouveau map pour stocker le total des remboursements
-      const reimbursementStatusMap = new Map(); // Map pour stocker les statuts des remboursements
-
-      // Initialiser les maps de remboursement pour toutes les paires de participants possibles
-      participants.forEach(p1 => {
-        participants.forEach(p2 => {
-          if (p1.name !== p2.name) {
-            const key = `${p1.name}-${p2.name}`;
-            // Initialiser reimbursementMap et totalReimbursedMap pour toutes les paires
-            // afin d'éviter les undefined plus tard si une paire n'a pas de remboursement.
-            if (!reimbursementMap.has(key)) {
-              reimbursementMap.set(key, 0);
-            }
-            if (!totalReimbursedMap.has(key)) {
-              totalReimbursedMap.set(key, 0);
-            }
-          }
-        });
-      });
-
-      // Calculer les remboursements par paire de participants
-      reimbursements.forEach(reimbursement => {
-        const key = `${reimbursement.debtor_name}-${reimbursement.creditor_name}`;
-        const reverseKey = `${reimbursement.creditor_name}-${reimbursement.debtor_name}`;
-        
-        // Ajouter au total des remboursements pour cette paire
-        if (!totalReimbursedMap.has(key)) {
-          totalReimbursedMap.set(key, 0);
-        }
-        totalReimbursedMap.set(key, totalReimbursedMap.get(key) + parseFloat(reimbursement.amount));
-        
-        // Ajouter au montant remboursé pour cette dette
-        if (!reimbursementMap.has(key)) {
-          reimbursementMap.set(key, 0);
-        }
-        
-        // Ajouter le statut du remboursement à la map des statuts
-        if (!reimbursementStatusMap.has(key)) {
-          reimbursementStatusMap.set(key, []);
-        }
-        reimbursementStatusMap.get(key).push({
-          id: reimbursement.id,
-          amount: parseFloat(reimbursement.amount),
-          status: reimbursement.status,
-          date: reimbursement.date || reimbursement.timestamp
-        });
-        
-        // N'ajouter au montant remboursé que si le statut est 'completed'
-        if (reimbursement.status === 'completed') {
-          reimbursementMap.set(key, reimbursementMap.get(key) + parseFloat(reimbursement.amount));
-        }
-      });
-
-      // Calculer les dettes finales en soustrayant les remboursements
-      const finalDebts = [];
+      // 6. Calculer les totaux pour l'utilisateur connecté
       const userParticipant = participants.find(p => p.user_id === parseInt(connectedUserId));
       
-      console.log(`Looking for user ${connectedUserId} in participants`);
       if (!userParticipant) {
-        console.log(`User ${connectedUserId} not found in participants, returning empty debts`);
-        // Si l'utilisateur n'est pas trouvé, essayons de le trouver par son username
-        const userQuery = `SELECT username FROM users WHERE id = ?`;
-        const userResults = await db.query(userQuery, [connectedUserId]);
-        
-        if (userResults && userResults.length > 0) {
-          const username = userResults[0].username;
-          console.log(`Found username ${username} for user ${connectedUserId}`);
-          
-          // Chercher un participant avec ce nom d'utilisateur
-          const participantByName = participants.find(p => p.name === username);
-          
-          if (participantByName) {
-            console.log(`Found participant by name ${username}, updating user_id`);
-            // Mettre à jour le participant avec l'ID utilisateur
-            await db.query('UPDATE participants SET user_id = ? WHERE id = ?', [connectedUserId, participantByName.id]);
-            // Continuer avec ce participant
-            participantByName.user_id = parseInt(connectedUserId);
-            userParticipant = participantByName;
-          } else {
-            console.log(`No participant found with name ${username}`);
-            return {
-              debts: [],
-              total_to_pay: 0,
-              total_to_receive: 0
-            };
-          }
-        } else {
-          console.log(`No username found for user ${connectedUserId}`);
-          return {
-            debts: [],
-            total_to_pay: 0,
-            total_to_receive: 0
-          };
-        }
-      }
-
-      // Parcourir toutes les paires de participants possibles
-      participants.forEach(debtor => {
-        participants.forEach(creditor => {
-          if (debtor.name !== creditor.name) {
-            const key = `${debtor.name}-${creditor.name}`;
-            const debtAmount = debtMap.get(key) || 0;
-            const reimbursementAmount = reimbursementMap.get(key) || 0;
-            const totalReimbursed = totalReimbursedMap.get(key) || 0;
-            
-            // Si la dette est supérieure aux remboursements
-            if (debtAmount > reimbursementAmount) {
-              const remainingAmount = debtAmount - reimbursementAmount;
-              // Récupérer les statuts des remboursements pour cette paire
-              const reimbursementStatuses = reimbursementStatusMap.get(key) || [];
-              
-              finalDebts.push({
-                from: debtor.name,
-                to: creditor.name,
-                amount: remainingAmount,
-                originalAmount: debtAmount,
-                reimbursedAmount: reimbursementAmount,
-                totalReimbursed: totalReimbursed,
-                isFullyReimbursed: false,
-                currency: expenses[0]?.currency || 'EUR',
-                debtor_id: debtor.user_id, // Ajout de l'ID du débiteur
-                creditor_id: creditor.user_id, // Ajout de l'ID du créditeur
-                reimbursementStatuses: reimbursementStatuses // Ajout des statuts des remboursements
-              });
-            } else if (reimbursementAmount > 0) {
-              // Si la dette a été complètement remboursée, on l'ajoute quand même pour l'affichage
-              // Récupérer les statuts des remboursements pour cette paire
-              const key = `${debtor.name}-${creditor.name}`;
-              const reimbursementStatuses = reimbursementStatusMap.get(key) || [];
-              
-              finalDebts.push({
-                from: debtor.name,
-                to: creditor.name,
-                amount: 0,
-                originalAmount: debtAmount,
-                reimbursedAmount: reimbursementAmount,
-                totalReimbursed: totalReimbursed,
-                isFullyReimbursed: true,
-                currency: expenses[0]?.currency || 'EUR',
-                debtor_id: debtor.user_id, // Ajout de l'ID du débiteur
-                creditor_id: creditor.user_id, // Ajout de l'ID du créditeur
-                reimbursementStatuses: reimbursementStatuses // Ajout des statuts des remboursements
-              });
-            }
-          }
-        });
-      });
-
-      // Calculer les totaux pour l'utilisateur connecté
-      let total_to_pay = 0;
-      let total_to_receive = 0;
-
-      finalDebts.forEach(debt => {
-        if (debt.from === userParticipant.name) {
-          total_to_pay += debt.amount;
-        }
-        if (debt.to === userParticipant.name) {
-          total_to_receive += debt.amount;
-        }
-      });
-
-      console.log(`Returning ${finalDebts.length} debts, total_to_pay: ${total_to_pay}, total_to_receive: ${total_to_receive}`);
-      
-      // Si aucune dette n'est trouvée mais que des dettes optimisées existent, utiliser celles-ci
-      if (finalDebts.length === 0 && optimizedDebts.length > 0) {
-        console.log(`No final debts found but ${optimizedDebts.length} optimized debts exist, using those instead`);
-        
-        // Ajouter les statuts des remboursements aux dettes optimisées
-        const optimizedDebtsWithStatus = optimizedDebts.map(debt => {
-          const key = `${debt.from}-${debt.to}`;
-          const reimbursementStatuses = reimbursementStatusMap.get(key) || [];
-          return {
-            ...debt,
-            reimbursementStatuses
-          };
-        });
-        
         return {
-          debts: optimizedDebtsWithStatus,
-          total_to_pay: userSummary ? userSummary.total_to_pay : 0,
-          total_to_receive: userSummary ? userSummary.total_to_receive : 0
+          debts: [],
+          total_to_pay: 0,
+          total_to_receive: 0,
+          pending_to_pay: 0
         };
       }
-      
+
+      const userSummary = this.calculateUserSummary(finalDebts, userParticipant.name);
+
+      console.log('Vérification des totaux finaux:');
+      console.log('Total à payer:', userSummary.total_to_pay);
+      console.log('Total à recevoir:', userSummary.total_to_receive);
+      console.log('En attente de remboursement:', userSummary.pending_to_pay);
+      console.log('Dettes finales:', finalDebts.length);
+
       return {
         debts: finalDebts,
-        total_to_pay,
-        total_to_receive
+        total_to_pay: userSummary.total_to_pay,
+        total_to_receive: userSummary.total_to_receive,
+        pending_to_pay: userSummary.pending_to_pay,
+        rejected_to_pay: userSummary.rejected_to_pay || 0
       };
     } catch (error) {
       console.error('Error calculating debts:', error);
       throw error;
     }
+  }
+
+  /**
+   * Calcule les dettes entre participants avec optimisation par paires
+   * @param {Array} expenses - Liste des dépenses
+   * @param {Array} participants - Liste des participants
+   * @returns {Array} Liste des dettes optimisées entre participants
+   */
+  computeDebts(expenses, participants) {
+    console.log('Computing debts using pairwise optimization method...');
+    
+    // 1. Calculer les dettes directes entre chaque paire de participants
+    const pairwiseDebts = this.calculatePairwiseDebts(expenses, participants);
+    console.log('Dettes par paire calculées:', pairwiseDebts);
+    
+    // 2. Optimiser les dettes entre chaque paire (éliminer A→B et B→A)
+    const optimizedPairwiseDebts = this.optimizePairwiseDebts(pairwiseDebts);
+    console.log('Dettes par paire optimisées:', optimizedPairwiseDebts);
+    
+    // 3. Vérifier l'équilibre global
+    this.verifyGlobalBalance(optimizedPairwiseDebts, participants);
+    
+    return optimizedPairwiseDebts;
+  }
+
+  /**
+   * Calcule les dettes directes entre chaque paire de participants
+   * @param {Array} expenses - Liste des dépenses
+   * @param {Array} participants - Liste des participants
+   * @returns {Map} Map des dettes par paire (clé: "from-to", valeur: montant)
+   */
+  calculatePairwiseDebts(expenses, participants) {
+    // Initialiser une matrice de dettes pour chaque paire
+    const debtMatrix = new Map();
+    
+    // Initialiser toutes les paires à 0
+    participants.forEach(p1 => {
+      participants.forEach(p2 => {
+        if (p1.name !== p2.name) {
+          const key = `${p1.name}-${p2.name}`;
+          debtMatrix.set(key, 0);
+        }
+      });
+    });
+    
+    // Pour chaque dépense, calculer qui doit combien à qui
+    expenses.forEach(expense => {
+      const payer = expense.paid_by;
+      
+      console.log(`\nAnalyse de la dépense: ${expense.description} (${expense.amount}€) payée par ${payer}`);
+      
+      // Pour chaque participant à cette dépense
+      expense.participants.forEach(participant => {
+        if (participant.name !== payer) {
+          const shareAmount = parseFloat(participant.share_amount);
+          if (!isNaN(shareAmount) && shareAmount > 0) {
+            const key = `${participant.name}-${payer}`;
+            const currentDebt = debtMatrix.get(key) || 0;
+            debtMatrix.set(key, currentDebt + shareAmount);
+            
+            console.log(`  ${participant.name} doit ${shareAmount}€ à ${payer} (total: ${(currentDebt + shareAmount).toFixed(2)}€)`);
+          }
+        }
+      });
+    });
+    
+    return debtMatrix;
+  }
+
+  /**
+   * Optimise les dettes entre chaque paire (élimine les cycles A→B et B→A)
+   * @param {Map} pairwiseDebts - Map des dettes par paire
+   * @returns {Array} Liste des dettes optimisées
+   */
+  optimizePairwiseDebts(pairwiseDebts) {
+    console.log('\nOptimisation des dettes par paire...');
+    
+    const optimizedDebts = [];
+    const processedPairs = new Set();
+    
+    // Récupérer tous les noms de participants uniques
+    const participantNames = new Set();
+    for (const key of pairwiseDebts.keys()) {
+      const [from, to] = key.split('-');
+      participantNames.add(from);
+      participantNames.add(to);
+    }
+    
+    // Pour chaque paire de participants, optimiser les dettes dans les deux sens
+    Array.from(participantNames).forEach(p1 => {
+      Array.from(participantNames).forEach(p2 => {
+        if (p1 !== p2) {
+          const pairKey = [p1, p2].sort().join('-');
+          
+          // Éviter de traiter la même paire deux fois
+          if (processedPairs.has(pairKey)) return;
+          processedPairs.add(pairKey);
+          
+          // Récupérer les dettes dans les deux sens
+          const debt1to2 = pairwiseDebts.get(`${p1}-${p2}`) || 0;
+          const debt2to1 = pairwiseDebts.get(`${p2}-${p1}`) || 0;
+          
+          console.log(`\nAnalyse paire ${p1} ↔ ${p2}:`);
+          console.log(`  ${p1} → ${p2}: ${debt1to2.toFixed(2)}€`);
+          console.log(`  ${p2} → ${p1}: ${debt2to1.toFixed(2)}€`);
+          
+          // Calculer la dette nette
+          const netAmount = Math.abs(debt1to2 - debt2to1);
+          
+          if (netAmount > 0.01) { // Seuil pour éviter les arrondis
+            let from, to;
+            if (debt1to2 > debt2to1) {
+              from = p1;
+              to = p2;
+            } else {
+              from = p2;
+              to = p1;
+            }
+            
+            optimizedDebts.push({
+              from: from,
+              to: to,
+              amount: parseFloat(netAmount.toFixed(2))
+            });
+            
+            console.log(`  → Dette nette: ${from} doit ${netAmount.toFixed(2)}€ à ${to}`);
+          } else {
+            console.log(`  → Équilibré (différence: ${netAmount.toFixed(2)}€)`);
+          }
+        }
+      });
+    });
+    
+    console.log(`\nRésultat: ${optimizedDebts.length} dette(s) optimisée(s) entre paires`);
+    return optimizedDebts;
+  }
+
+  /**
+   * Vérifie l'équilibre global des dettes
+   * @param {Array} debts - Liste des dettes
+   * @param {Array} participants - Liste des participants
+   */
+  verifyGlobalBalance(debts, participants) {
+    console.log('\nVérification de l\'équilibre global...');
+    
+    const balances = {};
+    participants.forEach(p => {
+      balances[p.name] = 0;
+    });
+    
+    // Calculer les balances à partir des dettes optimisées
+    debts.forEach(debt => {
+      balances[debt.from] -= debt.amount; // Le débiteur a une balance négative
+      balances[debt.to] += debt.amount;   // Le créancier a une balance positive
+    });
+    
+    // Vérifier que la somme totale est équilibrée
+    const totalBalance = Object.values(balances).reduce((sum, balance) => sum + balance, 0);
+    
+    console.log('Balances finales par participant:');
+    Object.entries(balances).forEach(([name, balance]) => {
+      const rounded = parseFloat(balance.toFixed(2));
+      if (rounded > 0.01) {
+        console.log(`  ${name}: +${rounded}€ (à recevoir)`);
+      } else if (rounded < -0.01) {
+        console.log(`  ${name}: ${rounded}€ (à payer)`);
+      } else {
+        console.log(`  ${name}: équilibré`);
+      }
+    });
+    
+    console.log(`Balance totale: ${totalBalance.toFixed(2)}€`);
+    
+    if (Math.abs(totalBalance) > 0.02) {
+      console.warn('ATTENTION: Déséquilibre global détecté!');
+    } else {
+      console.log('✓ Équilibre global vérifié');
+    }
+  }
+
+  /**
+   * Applique les remboursements aux dettes optimisées
+   * @param {Array} debts - Liste des dettes optimisées
+   * @param {Array} reimbursements - Liste des remboursements
+   * @param {Array} participants - Liste des participants
+   * @param {Array} expenses - Liste des dépenses
+   * @returns {Array} Liste des dettes avec remboursements appliqués
+   */
+  applyReimbursements(debts, reimbursements, participants, expenses) {
+    console.log('Applying reimbursements to optimized debts...');
+    
+    const finalDebts = [];
+    
+    debts.forEach(debt => {
+      // Récupérer tous les remboursements pour cette paire
+      const allReimbursements = reimbursements.filter(r => 
+        r.debtor_name === debt.from && 
+        r.creditor_name === debt.to
+      ).sort((a, b) => {
+        const dateA = new Date(a.date || a.created_at);
+        const dateB = new Date(b.date || b.created_at);
+        return dateA - dateB;
+      });
+
+      // Calculer les montants des remboursements par statut
+      const completedReimbursement = allReimbursements
+        .filter(r => r.status === 'completed')
+        .reduce((sum, r) => sum + parseFloat(r.amount), 0);
+      
+      const pendingReimbursement = allReimbursements
+        .filter(r => r.status === 'pending')
+        .reduce((sum, r) => sum + parseFloat(r.amount), 0);
+      
+      const rejectedReimbursement = allReimbursements
+        .filter(r => r.status === 'rejected')
+        .reduce((sum, r) => sum + parseFloat(r.amount), 0);
+
+      // Construire le tableau des statuts de remboursement
+      const reimbursementStatuses = allReimbursements.map(r => ({
+        id: r.id,
+        amount: parseFloat(r.amount),
+        status: r.status,
+        date: r.date || r.created_at
+      }));
+
+      // Calculer le montant restant après les remboursements complétés
+      const remainingAmount = parseFloat((debt.amount - completedReimbursement).toFixed(2));
+      const totalReimbursed = completedReimbursement + pendingReimbursement;
+      
+      // Vérifier si la dette est complètement remboursée
+      const isFullyReimbursed = remainingAmount <= 0.01 && completedReimbursement >= debt.amount;
+
+      // Récupérer les IDs des participants
+      const debtorParticipant = participants.find(p => p.name === debt.from);
+      const creditorParticipant = participants.find(p => p.name === debt.to);
+
+      const finalDebt = {
+        from: debt.from,
+        to: debt.to,
+        amount: Math.max(0, remainingAmount),
+        originalAmount: debt.amount,
+        reimbursedAmount: completedReimbursement,
+        pendingReimbursement: pendingReimbursement,
+        rejectedReimbursement: rejectedReimbursement,
+        totalReimbursed: totalReimbursed,
+        isFullyReimbursed: isFullyReimbursed,
+        currency: expenses[0]?.currency || 'EUR',
+        debtor_id: debtorParticipant?.user_id,
+        creditor_id: creditorParticipant?.user_id,
+        reimbursementStatuses: reimbursementStatuses,
+        debtEntries: [] // Pour compatibilité
+      };
+
+      finalDebts.push(finalDebt);
+      
+      console.log(`Dette ${debt.from} → ${debt.to}: ${debt.amount}€ → ${finalDebt.amount}€ après remboursements`);
+    });
+
+    return finalDebts;
+  }
+
+  /**
+   * Calcule le résumé pour l'utilisateur connecté
+   * @param {Array} debts - Liste des dettes
+   * @param {string} userName - Nom de l'utilisateur
+   * @returns {Object} Résumé pour l'utilisateur connecté
+   */
+  calculateUserSummary(debts, userName) {
+    let total_to_pay = 0;
+    let total_to_receive = 0;
+    let pending_to_pay = 0;
+    let rejected_to_pay = 0;
+    
+    debts.forEach(debt => {
+      if (debt.from === userName) {
+        // L'utilisateur doit payer
+        total_to_pay += debt.amount;
+        pending_to_pay += debt.pendingReimbursement || 0;
+        rejected_to_pay += debt.rejectedReimbursement || 0;
+      }
+      
+      if (debt.to === userName) {
+        // L'utilisateur doit recevoir
+        total_to_receive += debt.amount;
+      }
+    });
+    
+    return {
+      total_to_pay: parseFloat(total_to_pay.toFixed(2)),
+      total_to_receive: parseFloat(total_to_receive.toFixed(2)),
+      pending_to_pay: parseFloat(pending_to_pay.toFixed(2)),
+      rejected_to_pay: parseFloat(rejected_to_pay.toFixed(2))
+    };
   }
 
   /**
@@ -258,7 +385,7 @@ class BalanceService {
     try {
       // Récupérer les dépenses
       const expensesQuery = `
-        SELECT e.id, e.description, e.amount, e.paid_by, e.split_type, e.currency
+        SELECT e.id, e.description, e.amount, e.paid_by, e.split_type, e.currency, e.created_at
         FROM expenses e
         WHERE e.event_id = ?
       `;
@@ -323,129 +450,31 @@ class BalanceService {
   }
 
   /**
-   * Calcule les dettes entre participants
-   * @param {Array} expenses - Liste des dépenses
-   * @param {Array} participants - Liste des participants
-   * @returns {Array} Liste des dettes entre participants
-   */
-  computeDebts(expenses, participants) {
-    // Créer un mapping des noms de participants vers leurs IDs
-    const participantNameToId = {};
-    participants.forEach(p => {
-      participantNameToId[p.name] = p.id;
-    });
-    
-    // Initialiser la matrice de dettes (qui doit combien à qui)
-    const debtMatrix = {};
-    participants.forEach(p1 => {
-      debtMatrix[p1.name] = {};
-      participants.forEach(p2 => {
-        if (p1.name !== p2.name) {
-          debtMatrix[p1.name][p2.name] = 0;
-        }
-      });
-    });
-    
-    // Calculer les dettes pour chaque dépense
-    expenses.forEach(expense => {
-      const payer = expense.paid_by;
-      
-      // Pour chaque participant à la dépense
-      expense.participants.forEach(participant => {
-        if (participant.name !== payer) {
-          // Le participant doit au payeur
-          debtMatrix[participant.name][payer] += parseFloat(participant.share_amount);
-        }
-      });
-    });
-    
-    // Calculer les dettes nettes (si A doit 4€ à B et B doit 3€ à A, alors A doit 1€ à B)
-    const netDebts = [];
-    participants.forEach(p1 => {
-      participants.forEach(p2 => {
-        if (p1.name !== p2.name) {
-          const debt1 = debtMatrix[p1.name][p2.name] || 0;
-          const debt2 = debtMatrix[p2.name][p1.name] || 0;
-          
-          if (debt1 > debt2) {
-            // p2 doit plus à p1 que p1 à p2
-            const netAmount = debt1 - debt2;
-            if (netAmount > 0) {
-              netDebts.push({
-                from: p1.name,
-                to: p2.name,
-                amount: parseFloat(netAmount.toFixed(2))
-              });
-            }
-          }
-        }
-      });
-    });
-    
-    // Filtrer les dettes nulles
-    return netDebts.filter(debt => debt.amount > 0);
-  }
-
-  /**
-   * Optimise les transferts pour minimiser le nombre de transactions
+   * Optimise les transferts pour minimiser le nombre de transactions (legacy method)
    * @param {Array} debts - Liste des dettes nettes entre participants
    * @param {Array} participants - Liste des participants
    * @returns {Array} Liste optimisée des dettes
    */
   optimizeTransfers(debts, participants) {
-    console.log('Optimizing transfers between specific participants only');
-    
-    // Créer une structure pour stocker les dettes entre chaque paire de participants
-    const debtsByPair = new Map();
-    
-    // Regrouper les dettes par paire de participants
-    debts.forEach(debt => {
-      const key = `${debt.from}-${debt.to}`;
-      if (!debtsByPair.has(key)) {
-        debtsByPair.set(key, []);
-      }
-      debtsByPair.get(key).push(debt);
-    });
-    
-    // Pour chaque paire, simplifier les dettes en une seule dette
-    const simplifiedDebts = [];
-    
-    debtsByPair.forEach((pairDebts, key) => {
-      const [from, to] = key.split('-');
-      
-      // Calculer le montant total des dettes pour cette paire
-      const totalAmount = pairDebts.reduce((sum, debt) => sum + debt.amount, 0);
-      
-      // Récupérer les informations de remboursement si elles existent dans la première dette
-      const firstDebt = pairDebts[0];
-      const reimbursedAmount = firstDebt?.reimbursedAmount || 0;
-      const totalReimbursed = firstDebt?.totalReimbursed || 0;
-      const isFullyReimbursed = firstDebt?.isFullyReimbursed || false;
-      
-      // Si le montant est significatif ou s'il y a eu des remboursements, ajouter une dette simplifiée
-      if (totalAmount > 0.01 || reimbursedAmount > 0) {
-        // Calculer le montant restant après remboursements
-        const remainingAmount = Math.max(0, totalAmount - reimbursedAmount);
-        
-        simplifiedDebts.push({
-          from,
-          to,
-          amount: parseFloat(remainingAmount.toFixed(2)),
-          currency: firstDebt?.currency || 'EUR',
-          originalAmount: totalAmount,
-          reimbursedAmount: reimbursedAmount,
-          totalReimbursed: totalReimbursed,
-          isFullyReimbursed: remainingAmount <= 0 && reimbursedAmount > 0
-        });
-      }
-    });
-    
-    console.log(`Simplified ${debts.length} debts to ${simplifiedDebts.length} debts between specific participants`);
-    return simplifiedDebts;
+    // Cette méthode n'est plus utilisée car l'optimisation se fait maintenant directement dans computeDebts
+    console.log('Legacy optimizeTransfers called - returning debts as-is since optimization is now built-in');
+    return debts;
+  }
+
+  /**
+   * Génère les transactions optimales entre créanciers et débiteurs (legacy method)
+   * @param {Array} creditors - Liste des créanciers
+   * @param {Array} debtors - Liste des débiteurs
+   * @returns {Array} Liste optimisée des dettes
+   */
+  generateOptimalTransactions(creditors, debtors) {
+    // Cette méthode n'est plus utilisée
+    console.log('Legacy generateOptimalTransactions called');
+    return [];
   }
   
   /**
-   * Calcule le résumé pour l'utilisateur connecté
+   * Calcule le résumé pour l'utilisateur connecté (legacy method for compatibility)
    * @param {Array} debts - Liste des dettes
    * @param {number} connectedUserId - ID de l'utilisateur connecté
    * @param {Array} participants - Liste des participants
@@ -466,13 +495,11 @@ class BalanceService {
     const debit = [];
     
     debts.forEach(debt => {
-      // Utiliser le montant restant après remboursements (amount) au lieu du montant total
       const amount = parseFloat(debt.amount.toFixed(2));
       const originalAmount = debt.originalAmount ? parseFloat(debt.originalAmount.toFixed(2)) : amount;
       const reimbursedAmount = debt.reimbursedAmount ? parseFloat(debt.reimbursedAmount.toFixed(2)) : 0;
       
       if (debt.from === userName) {
-        // Ajouter seulement le montant restant à payer
         totalToPay += amount;
         debit.push({
           to: debt.to,
@@ -484,7 +511,6 @@ class BalanceService {
       }
       
       if (debt.to === userName) {
-        // Ajouter seulement le montant restant à recevoir
         totalToReceive += amount;
         credit.push({
           from: debt.from,
@@ -510,4 +536,4 @@ class BalanceService {
 }
 
 // Exporter une instance de BalanceService au lieu de la classe
-module.exports = new BalanceService();
+module.exports = new BalanceService(); 

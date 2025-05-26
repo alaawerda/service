@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const balanceService = require('./services/balanceService');
+const { Expo } = require('expo-server-sdk');
+
+// Create a new Expo SDK client
+const expo = new Expo();
 
 // Fonction pour générer un code unique pour l'événement
 const generateUniqueEventCode = () => {
@@ -21,6 +25,48 @@ const getDefaultBalances = () => {
 
 // balanceService is already an instance because of how it's exported
 const balanceServiceInstance = balanceService;
+
+// Fonction utilitaire pour envoyer des notifications push
+async function sendPushNotification(pushMessage) {
+  try {
+    console.log('🔔 Attempting to send push notification:', {
+      to: pushMessage.to,
+      title: pushMessage.title,
+      type: pushMessage.data?.type
+    });
+
+    // Vérifier que le token est valide
+    if (!Expo.isExpoPushToken(pushMessage.to)) {
+      console.error('❌ Invalid Expo push token:', pushMessage.to);
+      return false;
+    }
+
+    const chunks = expo.chunkPushNotifications([pushMessage]);
+    let notificationSent = false;
+
+    for (const chunk of chunks) {
+      try {
+        const tickets = await expo.sendPushNotificationsAsync(chunk);
+        console.log('✅ Push notification tickets:', tickets);
+
+        // Vérifier les erreurs dans les tickets
+        const errors = tickets.filter(ticket => ticket.status === 'error');
+        if (errors.length > 0) {
+          console.error('❌ Push notification errors:', errors);
+        } else {
+          notificationSent = true;
+        }
+      } catch (error) {
+        console.error('❌ Error sending push notification chunk:', error);
+      }
+    }
+
+    return notificationSent;
+  } catch (error) {
+    console.error('❌ Error in sendPushNotification:', error);
+    return false;
+  }
+}
 
 module.exports = (db) => {
 
@@ -233,28 +279,166 @@ router.post('/api/reimbursement-requests', async (req, res) => {
       });
     }
     
-    // Vérifier que l'utilisateur et le débiteur existent
-    const userCheck = await db.query('SELECT id FROM users WHERE id = ?', [userId]);
-    if (!userCheck || userCheck.length === 0) {
-      return res.status(404).json({ error: 'Requester not found' });
+    // Récupérer les informations complètes pour les notifications
+    const requestDetailQuery = `
+      SELECT 
+        u.username as requester_username,
+        d.username as debtor_username,
+        e.name as event_name
+      FROM users u, users d, events e
+      WHERE u.id = ? AND d.id = ? AND e.id = ?
+    `;
+    
+    const requestDetails = await db.query(requestDetailQuery, [userId, debtorId, eventId]);
+    
+    if (!requestDetails || requestDetails.length === 0) {
+      return res.status(404).json({ error: 'User, debtor or event not found' });
     }
     
-    const debtorCheck = await db.query('SELECT id FROM users WHERE id = ?', [debtorId]);
-    if (!debtorCheck || debtorCheck.length === 0) {
-      return res.status(404).json({ error: 'Debtor not found' });
-    }
-    
-    // Vérifier que l'événement existe
-    const eventCheck = await db.query('SELECT id FROM events WHERE id = ?', [eventId]);
-    if (!eventCheck || eventCheck.length === 0) {
-      return res.status(404).json({ error: 'Event not found' });
-    }
+    const requestInfo = requestDetails[0];
     
     // Insérer la demande de remboursement
     const result = await db.query(
       'INSERT INTO reimbursement_requests (event_id, requester_id, debtor_id, amount, currency, message, payment_method, payment_details, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [eventId, userId, debtorId, amount, currency, message || null, paymentMethod || null, paymentDetails || null, 'pending']
     );
+    
+    // Créer et envoyer une notification pour la nouvelle demande
+    try {
+      const notificationType = 'debt_request';
+      const title = 'New Reimbursement Request';
+      const body = `${requestInfo.requester_username} has requested a reimbursement of ${amount} ${currency} from you for ${requestInfo.event_name}.`;
+      
+      // Créer la notification en base de données
+      const notificationInsertQuery = `
+        INSERT INTO notifications (
+          user_id, title, message, type, action_user_id, action_user_name,
+          amount, currency, event_id, event_name, reference_data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      
+      const referenceData = {
+        requestId: result.insertId,
+        originalType: 'request',
+        timestamp: new Date().toISOString(),
+        eventId: eventId,
+        debtorId: debtorId,
+        requesterId: userId
+      };
+      
+      await db.query(notificationInsertQuery, [
+        debtorId, // Le débiteur reçoit la notification
+        title,
+        body,
+        notificationType,
+        userId, // L'utilisateur qui fait la demande (requester)
+        requestInfo.requester_username,
+        parseFloat(amount),
+        currency,
+        eventId,
+        requestInfo.event_name,
+        JSON.stringify(referenceData)
+      ]);
+      
+      console.log(`✅ Request notification created in database for user ${debtorId}`);
+      
+      // Tenter d'envoyer une notification push
+      try {
+        console.log(`🔔 Attempting to send request push notification to user ${debtorId}`);
+        
+        const tokenResponse = await db.query(
+          'SELECT token FROM device_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+          [debtorId]
+        );
+        
+        if (tokenResponse && tokenResponse.length > 0) {
+          const recipientToken = tokenResponse[0].token;
+          console.log(`📱 Found device token for user ${debtorId}: ${recipientToken ? 'EXISTS' : 'NULL'}`);
+          
+          // Vérifier que le token est valide pour Expo
+          if (expo.isExpoPushToken(recipientToken)) {
+            const pushMessage = {
+              to: recipientToken,
+              sound: 'default',
+              title,
+              body,
+              data: {
+                type: notificationType,
+                requestId: result.insertId,
+                eventId: eventId,
+                amount: amount,
+                currency: currency,
+                timestamp: new Date().toISOString(),
+                requesterName: requestInfo.requester_username,
+                eventName: requestInfo.event_name,
+                paymentMethod: paymentMethod || null,
+                message: message || null
+              },
+              priority: 'high',
+              badge: 1,
+              android: {
+                color: '#2196F3', // Bleu pour les demandes
+                channelId: 'default',
+                priority: 'high',
+                smallIcon: '@mipmap/ic_launcher',
+                largeIcon: '@mipmap/ic_launcher'
+              },
+              ios: {
+                icon: '@mipmap/ic_launcher'
+              }
+            };
+            
+            console.log('📤 SENDING REIMBURSEMENT REQUEST push notification:', {
+              to: recipientToken,
+              title,
+              body,
+              dataType: notificationType,
+              recipientUserId: debtorId,
+              requesterName: requestInfo.requester_username,
+              amount,
+              currency,
+              eventName: requestInfo.event_name,
+              messageData: pushMessage.data
+            });
+            
+            const chunks = expo.chunkPushNotifications([pushMessage]);
+            let notificationSent = false;
+            
+            for (const chunk of chunks) {
+              try {
+                const tickets = await expo.sendPushNotificationsAsync(chunk);
+                console.log(`✅ Push notification sent for request to user ${debtorId}. Tickets:`, tickets);
+                
+                // Vérifier s'il y a des erreurs dans les tickets
+                const errors = tickets.filter(ticket => ticket.status === 'error');
+                if (errors.length > 0) {
+                  console.error('❌ Push notification errors:', errors);
+                } else {
+                  notificationSent = true;
+                  console.log('✅ REIMBURSEMENT REQUEST notification successfully sent to user:', debtorId);
+                }
+              } catch (pushError) {
+                console.error('❌ Error sending push notification chunk:', pushError);
+              }
+            }
+            
+            // Log final pour confirmer l'envoi
+            console.log(`📤 REIMBURSEMENT REQUEST notification final status: ${notificationSent ? 'SENT' : 'FAILED'} for user ${debtorId}`);
+            
+          } else {
+            console.log(`❌ Invalid or missing Expo push token for user: ${debtorId}, Token: ${recipientToken}`);
+          }
+        } else {
+          console.log(`ℹ️ No device token found for user: ${debtorId}`);
+        }
+      } catch (tokenError) {
+        console.error('❌ Error fetching device token or sending push notification:', tokenError);
+      }
+      
+    } catch (notificationError) {
+      console.error(`❌ Error creating/sending request notification:`, notificationError);
+      // Ne pas faire échouer la requête principale si la notification échoue
+    }
     
     res.status(201).json({ 
       id: result.insertId,
@@ -283,17 +467,27 @@ router.put('/api/reimbursement-requests/:id', async (req, res) => {
       return res.status(400).json({ error: 'Invalid status' });
     }
     
-    // Vérifier que la demande existe et que l'utilisateur est autorisé à la modifier
-    const requestCheck = await db.query(
-      'SELECT requester_id, debtor_id FROM reimbursement_requests WHERE id = ?',
-      [id]
-    );
+    // Récupérer les informations complètes de la demande de remboursement pour les notifications
+    const requestDetailQuery = `
+      SELECT rr.*, 
+             e.name as event_name, 
+             requester.username as requester_username,
+             debtor.username as debtor_username
+      FROM reimbursement_requests rr
+      JOIN events e ON rr.event_id = e.id
+      JOIN users requester ON rr.requester_id = requester.id
+      JOIN users debtor ON rr.debtor_id = debtor.id
+      WHERE rr.id = ?
+    `;
     
-    if (!requestCheck || requestCheck.length === 0) {
+    const requestDetails = await db.query(requestDetailQuery, [id]);
+    
+    if (!requestDetails || requestDetails.length === 0) {
       return res.status(404).json({ error: 'Reimbursement request not found' });
     }
     
-    const { requester_id, debtor_id } = requestCheck[0];
+    const requestInfo = requestDetails[0];
+    const { requester_id, debtor_id } = requestInfo;
     
     // Vérifier les permissions selon le statut à mettre à jour
     if (status === 'approved' || status === 'rejected') {
@@ -325,6 +519,138 @@ router.put('/api/reimbursement-requests/:id', async (req, res) => {
     params.push(id);
     
     await db.query(query, params);
+    
+    // Créer et envoyer une notification pour les rejets (et approbations)
+    if (status === 'rejected' || status === 'approved') {
+      try {
+        const notificationType = status === 'rejected' ? 'debt_rejection' : 'debt_approval';
+        const title = status === 'rejected' ? 
+          (req.body.actionType === 'reject_payment' ? 'Payment Rejected' : 'Reimbursement Request Rejected') : 
+          'Reimbursement Approved';
+        const body = status === 'rejected' 
+          ? `${requestInfo.debtor_username} has rejected your reimbursement request of ${requestInfo.amount} ${requestInfo.currency} for ${requestInfo.event_name}.`
+          : `${requestInfo.debtor_username} has approved your reimbursement request of ${requestInfo.amount} ${requestInfo.currency} for ${requestInfo.event_name}.`;
+        
+        // Log spécial pour les rejets
+        if (status === 'rejected') {
+          console.log('🔴 PROCESSING REJECTION notification:', {
+            requestId: id,
+            requesterUserId: requestInfo.requester_id,
+            debtorUserId: requestInfo.debtor_id,
+            debtorUsername: requestInfo.debtor_username,
+            amount: requestInfo.amount,
+            currency: requestInfo.currency,
+            eventName: requestInfo.event_name,
+            title,
+            body,
+            notificationType
+          });
+        }
+        
+        // Vérifier que nous avons un destinataire valide
+        if (!requestInfo.requester_id) {
+          console.error(`❌ Cannot send ${status} notification: missing requester_id`);
+          throw new Error(`Missing requester_id for ${status} notification`);
+        }
+        
+        // Créer la notification en base de données
+        const notificationInsertQuery = `
+          INSERT INTO notifications (
+            user_id, title, message, type, action_user_id, action_user_name,
+            amount, currency, event_id, event_name, reference_data
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+        
+        const referenceData = {
+          requestId: id,
+          originalType: status,
+          timestamp: new Date().toISOString(),
+          eventId: requestInfo.event_id,
+          debtorId: requestInfo.debtor_id,
+          requesterId: requestInfo.requester_id,
+          actionType: req.body.actionType || 'reject_request'
+        };
+        
+        await db.query(notificationInsertQuery, [
+          requestInfo.requester_id,
+          title,
+          body,
+          notificationType,
+          requestInfo.debtor_id,
+          requestInfo.debtor_username,
+          parseFloat(requestInfo.amount),
+          requestInfo.currency,
+          requestInfo.event_id,
+          requestInfo.event_name,
+          JSON.stringify(referenceData)
+        ]);
+        
+        console.log(`✅ ${status} notification created in database for user ${requestInfo.requester_id}`);
+        
+        // Récupérer le token de l'appareil
+        const tokenResponse = await db.query(
+          'SELECT token FROM device_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+          [requestInfo.requester_id]
+        );
+
+        if (tokenResponse && tokenResponse.length > 0) {
+          const recipientToken = tokenResponse[0].token;
+          console.log(`📱 Found device token for user ${requestInfo.requester_id}: ${recipientToken ? 'EXISTS' : 'NULL'}`);
+
+          if (recipientToken) {
+            const pushMessage = {
+              to: recipientToken,
+              sound: 'default',
+              title,
+              body,
+              data: {
+                type: notificationType,
+                requestId: id,
+                eventId: requestInfo.event_id,
+                amount: requestInfo.amount,
+                currency: requestInfo.currency,
+                timestamp: new Date().toISOString(),
+                ...(status === 'rejected' && {
+                  rejectedBy: requestInfo.debtor_username,
+                  rejectedAt: new Date().toISOString(),
+                  originalAmount: requestInfo.amount,
+                  actionType: req.body.actionType || 'reject_request'
+                })
+              },
+              priority: 'high',
+              badge: 1,
+              android: {
+                color: status === 'rejected' ? '#F44336' : '#4CAF50',
+                channelId: 'default',
+                priority: 'high',
+                smallIcon: '@mipmap/ic_launcher',
+                largeIcon: '@mipmap/ic_launcher'
+              },
+              ios: {
+                icon: '@mipmap/ic_launcher'
+              }
+            };
+
+            // Utiliser la nouvelle fonction d'envoi de notification
+            const notificationSent = await sendPushNotification(pushMessage);
+
+            if (status === 'rejected') {
+              console.log(`🔴 REJECTION notification final status: ${notificationSent ? 'SENT' : 'FAILED'} for user ${requestInfo.requester_id}`);
+            }
+          } else {
+            console.log(`❌ Invalid or missing Expo push token for user: ${requestInfo.requester_id}`);
+          }
+        } else {
+          console.log(`ℹ️ No device token found for user: ${requestInfo.requester_id}`);
+          if (status === 'rejected') {
+            console.log('🔴 ⚠️ REJECTION notification could not be sent - no device token for user:', requestInfo.requester_id);
+          }
+        }
+      } catch (error) {
+        console.error(`❌ Error in notification process:`, error);
+        // Ne pas faire échouer la requête principale si la notification échoue
+      }
+    }
     
     res.json({ 
       success: true, 
@@ -392,12 +718,13 @@ router.post('/api/join-event', async (req, res) => {
       return res.status(400).json({ error: 'Code et utilisateur requis' });
     }
     // Vérifier si le participant est déjà lié à un utilisateur
-    const participantRows = await db.query('SELECT user_id, event_id FROM participants WHERE id = ?', [participantId]);
+    const participantRows = await db.query('SELECT user_id, event_id, name FROM participants WHERE id = ?', [participantId]);
     if (!participantRows || participantRows.length === 0) {
       return res.status(404).json({ error: 'Participant introuvable' });
     }
     // Vérifier si ce user participe déjà à cet event
     const eventId = participantRows[0].event_id;
+    const oldParticipantName = participantRows[0].name; // Store the old name before updating
     const alreadyParticipant = await db.query('SELECT id FROM participants WHERE event_id = ? AND user_id = ?', [eventId, userId]);
     if (alreadyParticipant && alreadyParticipant.length > 0) {
       return res.status(409).json({ error: 'Vous participez déjà à cet événement.' });
@@ -411,9 +738,24 @@ router.post('/api/join-event', async (req, res) => {
       return res.status(404).json({ error: 'Utilisateur introuvable' });
     }
     const username = userRows[0].username;
+    
     // Update the participant with the user_id and username
     await db.query('UPDATE participants SET user_id = ?, name = ? WHERE id = ?', [userId, username, participantId]);
-    return res.json({ success: true });
+    
+    // Update all expenses in this event where paid_by matches the old participant name
+    const updateExpensesResult = await db.query(
+      'UPDATE expenses SET paid_by = ? WHERE event_id = ? AND paid_by = ?', 
+      [username, eventId, oldParticipantName]
+    );
+    
+    console.log(`[Join Event] Successfully updated participant ${participantId} and ${updateExpensesResult.affectedRows} expense(s) in event ${eventId}`);
+    
+    return res.json({ 
+      success: true, 
+      updatedExpenses: updateExpensesResult.affectedRows,
+      message: `Participant updated and ${updateExpensesResult.affectedRows} expense(s) updated with new name` 
+    });
+    
   } catch (error) {
     console.error('Erreur join-event:', error);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -654,7 +996,7 @@ router.post('/api/join-event', async (req, res) => {
           ep.participant_id, 
           ep.share_amount, 
           ep.he_participates,
-          p.name AS participant_name -- Ajout du nom d'utilisateur
+          p.name AS participant_name
         FROM expenses e
         LEFT JOIN expense_participants ep ON e.id = ep.expense_id
         LEFT JOIN participants as p on ep.participant_id = p.id
@@ -662,7 +1004,6 @@ router.post('/api/join-event', async (req, res) => {
         ORDER BY e.created_date DESC
       `;
 
-      // Utiliser l'API promise de mysql2 au lieu des callbacks
       const results = await db.query(query, [eventId]);
       
       if (!results) {
@@ -689,13 +1030,15 @@ router.post('/api/join-event', async (req, res) => {
           const expense = expenseMap.get(row.id);
           expense.participants.push({
             participant_id: row.participant_id,
-            name: row.participant_name, // Utilisation du nom d'utilisateur récupéré
+            name: row.participant_name,
             share_amount: row.share_amount,
             he_participates: row.he_participates
           });
         }
       });
 
+      // Log a summary instead of the full data
+      console.log(`[Get Expenses] Retrieved ${expenses.length} expenses for event ${eventId}`);
       res.json(expenses);
     } catch (error) {
       console.error('Server error:', error);
@@ -776,24 +1119,21 @@ router.post('/api/join-event', async (req, res) => {
       const { expenseId } = req.params;
       console.log('[Get Expense] Request received:', { expenseId });
 
-      console.log('[Get Expense] Executing database query...');
-      // Requête améliorée pour récupérer toutes les informations nécessaires, y compris les parts pour le split_type 'shares'
       const query = `
        SELECT 
-    e.*,
-    GROUP_CONCAT(p.id ORDER BY p.id) AS participant_ids,
-    GROUP_CONCAT(p.name ORDER BY p.id) AS participant_names,
-    GROUP_CONCAT(ep.share_amount ORDER BY p.id) AS participant_shares,
-    GROUP_CONCAT(ep.share_count ORDER BY p.id) AS participant_share_counts, -- Added share_count
-    GROUP_CONCAT(ep.he_participates ORDER BY p.id) AS participant_participates
-FROM expenses e
-LEFT JOIN expense_participants ep ON e.id = ep.expense_id
-LEFT JOIN participants p ON ep.participant_id = p.id
-WHERE e.id = ? 
-GROUP BY e.id;
+          e.*,
+          GROUP_CONCAT(p.id ORDER BY p.id) AS participant_ids,
+          GROUP_CONCAT(p.name ORDER BY p.id) AS participant_names,
+          GROUP_CONCAT(ep.share_amount ORDER BY p.id) AS participant_shares,
+          GROUP_CONCAT(ep.share_count ORDER BY p.id) AS participant_share_counts,
+          GROUP_CONCAT(ep.he_participates ORDER BY p.id) AS participant_participates
+        FROM expenses e
+        LEFT JOIN expense_participants ep ON e.id = ep.expense_id
+        LEFT JOIN participants p ON ep.participant_id = p.id
+        WHERE e.id = ? 
+        GROUP BY e.id;
       `;
 
-      // Utiliser l'API promise de mysql2 au lieu des callbacks
       const results = await db.query(query, [expenseId]);
       
       if (!results || results.length === 0) {
@@ -807,56 +1147,33 @@ GROUP BY e.id;
       const participantIds = expenseData.participant_ids ? expenseData.participant_ids.split(',') : [];
       const participantNames = expenseData.participant_names ? expenseData.participant_names.split(',') : [];
       const participantShares = expenseData.participant_shares ? expenseData.participant_shares.split(',') : [];
-      const participantShareCounts = expenseData.participant_share_counts ? expenseData.participant_share_counts.split(',') : []; // Added share_counts
+      const participantShareCounts = expenseData.participant_share_counts ? expenseData.participant_share_counts.split(',') : [];
       const participantParticipates = expenseData.participant_participates ? expenseData.participant_participates.split(',') : [];
-      
-      // Récupérer tous les participants de l'événement pour s'assurer d'inclure même ceux qui ne participent pas
-      const eventId = expenseData.event_id;
-      const allParticipantsQuery = 'SELECT id, name FROM participants WHERE event_id = ?';
-      const allParticipants = await db.query(allParticipantsQuery, [eventId]);
-      
-      // Créer un mapping des participants existants dans la dépense
-      const existingParticipantsMap = {};
-      participantIds.forEach((id, index) => {
-        existingParticipantsMap[id] = {
-          participant_id: id,
-          name: participantNames[index] || '',
-          share_amount: parseFloat(participantShares[index] || 0),
-          share_count: parseInt(participantShareCounts[index] || 1), // Added share_count, default to 1
-          he_participates: participantParticipates[index] === '1'
-        };
-      });
-      
-      // Note: share_count est maintenant récupéré directement depuis la base de données
-      // et n'est plus recalculé ici pour le type 'shares'.
-      // La valeur de la base de données est utilisée telle quelle.
-      
-      // Construire la liste complète des participants, y compris ceux qui ne participent pas
-      expenseData.participants = allParticipants.map(p => {
-        if (existingParticipantsMap[p.id]) {
-          return existingParticipantsMap[p.id];
-        } else {
-          // Participant qui n'est pas dans la dépense
-          return {
-            participant_id: p.id,
-            name: p.name,
-            share_amount: 0,
-            he_participates: false,
-            share_count: 1 // Valeur par défaut pour les parts
-          };
-        }
-      });
 
-      // Remove temporary fields
+      // Create participants array
+      expenseData.participants = participantIds.map((id, index) => ({
+        id,
+        name: participantNames[index],
+        share_amount: parseFloat(participantShares[index]) || 0,
+        share_count: participantShareCounts[index] ? parseInt(participantShareCounts[index]) : null,
+        he_participates: participantParticipates[index] === '1'
+      }));
+
+      // Remove concatenated fields
       delete expenseData.participant_ids;
       delete expenseData.participant_names;
       delete expenseData.participant_shares;
+      delete expenseData.participant_share_counts;
       delete expenseData.participant_participates;
 
+      // Log a summary instead of the full data
       console.log('[Get Expense] Successfully retrieved expense:', {
         expenseId,
+        description: expenseData.description,
+        amount: expenseData.amount,
         participantCount: expenseData.participants.length,
-        split_type: expenseData.split_type
+        split_type: expenseData.split_type,
+        hasReceiptImage: !!expenseData.receipt_image
       });
 
       res.json(expenseData);
@@ -1412,6 +1729,405 @@ router.get('/api/reimbursements/:userId', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch reimbursement history' });
   }
 });
+
+// POST: Register a new device token
+router.post('/api/device-tokens', async (req, res) => {
+  try {
+    const { userId, token, deviceType } = req.body;
+    
+    if (!userId || !token || !deviceType) {
+      return res.status(400).json({ error: 'User ID, token, and device type are required' });
+    }
+
+    // Check if the user exists
+    const userCheck = await db.query('SELECT id FROM users WHERE id = ?', [userId]);
+    if (!userCheck || userCheck.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if token already exists
+    const existingToken = await db.query('SELECT id FROM device_tokens WHERE token = ?', [token]);
+    if (existingToken && existingToken.length > 0) {
+      // Update the existing token
+      await db.query(
+        'UPDATE device_tokens SET user_id = ?, device_type = ? WHERE token = ?',
+        [userId, deviceType, token]
+      );
+    } else {
+      // Insert new token
+      await db.query(
+        'INSERT INTO device_tokens (user_id, token, device_type) VALUES (?, ?, ?)',
+        [userId, token, deviceType]
+      );
+    }
+
+    res.json({ success: true, message: 'Device token registered successfully' });
+  } catch (error) {
+    console.error('Error registering device token:', error);
+    res.status(500).json({ error: 'Server error while registering device token' });
+  }
+});
+
+// GET: Get device token for a user
+router.get('/api/device-tokens/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    const tokens = await db.query(
+      'SELECT token FROM device_tokens WHERE user_id = ?',
+      [userId]
+    );
+
+    if (!tokens || tokens.length === 0) {
+      return res.status(404).json({ error: 'No device tokens found for user' });
+    }
+
+    // Return the most recent token
+    res.json({ token: tokens[0].token });
+  } catch (error) {
+    console.error('Error fetching device token:', error);
+    res.status(500).json({ error: 'Server error while fetching device token' });
+  }
+});
+
+// POST: Send push notification
+router.post('/api/send-push-notification', async (req, res) => {
+  try {
+    const { to, title, body, data, sound, priority } = req.body;
+
+    if (!to || !title || !body) {
+      return res.status(400).json({ error: 'Recipient token, title, and body are required' });
+    }
+
+    // Validate the token
+    if (!Expo.isExpoPushToken(to)) {
+      return res.status(400).json({ error: 'Invalid Expo push token' });
+    }
+
+    // Create the message
+    const message = {
+      to,
+      sound: sound || 'default',
+      title,
+      body,
+      data: data || {},
+      priority: priority || 'default',
+    };
+
+    // Send the message
+    const chunks = expo.chunkPushNotifications([message]);
+    const tickets = [];
+
+    for (const chunk of chunks) {
+      try {
+        const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+        tickets.push(...ticketChunk);
+      } catch (error) {
+        console.error('Error sending push notification chunk:', error);
+      }
+    }
+
+    // Check for errors
+    const errors = tickets.filter(ticket => ticket.status === 'error');
+    if (errors.length > 0) {
+      console.error('Push notification errors:', errors);
+      return res.status(500).json({ 
+        error: 'Some notifications failed to send',
+        details: errors
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Push notification sent successfully',
+      tickets
+    });
+  } catch (error) {
+    console.error('Error sending push notification:', error);
+    res.status(500).json({ error: 'Server error while sending push notification' });
+  }
+});
+
+// NOTIFICATIONS API ENDPOINTS
+
+// POST: Create a new notification
+router.post('/api/notifications', async (req, res) => {
+  try {
+    const { 
+      userId, 
+      title, 
+      message, 
+      type, 
+      actionUserId, 
+      actionUserName, 
+      amount, 
+      currency, 
+      eventId, 
+      eventName, 
+      debtId, 
+      referenceData 
+    } = req.body;
+
+    if (!userId || !title || !message || !type) {
+      return res.status(400).json({ error: 'User ID, title, message, and type are required' });
+    }
+
+    // Convert undefined values to null for all optional parameters
+    const insertQuery = `
+      INSERT INTO notifications (
+        user_id, title, message, type, action_user_id, action_user_name,
+        amount, currency, event_id, event_name, debt_id, reference_data
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const params = [
+      parseInt(userId),
+      title,
+      message,
+      type,
+      actionUserId ? parseInt(actionUserId) : null,
+      actionUserName || null,
+      amount ? parseFloat(amount) : null,
+      currency || null,
+      eventId ? parseInt(eventId) : null,
+      eventName || null,
+      debtId || null,
+      referenceData ? JSON.stringify(referenceData) : null
+    ];
+
+    // Validate that no undefined values are being passed
+    if (params.some(param => param === undefined)) {
+      console.error('Invalid parameters:', { params, body: req.body });
+      return res.status(400).json({ error: 'Invalid parameters provided' });
+    }
+
+    const result = await db.query(insertQuery, params);
+
+    res.status(201).json({ 
+      success: true, 
+      message: 'Notification created successfully',
+      notificationId: result.insertId
+    });
+  } catch (error) {
+    console.error('Error creating notification:', error);
+    res.status(500).json({ error: 'Server error while creating notification' });
+  }
+});
+
+// GET: Get all notifications for a user
+router.get('/api/notifications/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = '50', offset = '0', unreadOnly = false } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Ensure limit and offset are valid numbers and convert to integers
+    const parsedLimit = Math.max(1, Math.min(100, parseInt(limit) || 50));
+    const parsedOffset = Math.max(0, parseInt(offset) || 0);
+
+    // Build the query with LIMIT and OFFSET as part of the query string
+    let query = `
+      SELECT 
+        id, title, message, type, action_user_id, action_user_name,
+        amount, currency, event_id, event_name, debt_id, reference_data,
+        is_read, created_at, updated_at
+      FROM notifications 
+      WHERE user_id = ?
+    `;
+    
+    const params = [parseInt(userId)];
+
+    if (unreadOnly === 'true') {
+      query += ' AND is_read = FALSE';
+    }
+
+    // Get total count first
+    const countQuery = query.replace('SELECT \n        id, title, message, type, action_user_id, action_user_name,\n        amount, currency, event_id, event_name, debt_id, reference_data,\n        is_read, created_at, updated_at', 'SELECT COUNT(*) as total');
+    const countResult = await db.query(countQuery, params);
+    const total = countResult?.[0]?.[0]?.total || 0;
+
+    // Add ORDER BY and LIMIT/OFFSET directly in the query string
+    query += ` ORDER BY created_at DESC LIMIT ${parsedLimit} OFFSET ${parsedOffset}`;
+    
+    // Execute the paginated query
+    const notifications = await db.query(query, params);
+
+    // Parse JSON reference_data for each notification
+    const formattedNotifications = notifications.map(notification => ({
+      ...notification,
+      reference_data: notification.reference_data ? 
+        (typeof notification.reference_data === 'string' ? 
+          JSON.parse(notification.reference_data) : 
+          notification.reference_data) : 
+        null
+    }));
+
+    // Get unread count
+    const unreadCountQuery = 'SELECT COUNT(*) as unreadCount FROM notifications WHERE user_id = ? AND is_read = FALSE';
+    const unreadCountResult = await db.query(unreadCountQuery, [parseInt(userId)]);
+    const unreadCount = unreadCountResult?.[0]?.[0]?.unreadCount || 0;
+
+    res.json({ 
+      notifications: formattedNotifications,
+      unreadCount: unreadCount,
+      total: total
+    });
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
+    res.status(500).json({ error: 'Server error while fetching notifications' });
+  }
+});
+
+// GET: Get unread notification count for a user
+router.get('/api/notifications/:userId/count', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    const query = 'SELECT COUNT(*) as unreadCount FROM notifications WHERE user_id = ? AND is_read = FALSE';
+    const result = await db.query(query, [userId]);
+    const unreadCount = result[0]?.unreadCount || 0;
+
+    res.json({ unreadCount });
+  } catch (error) {
+    console.error('Error fetching notification count:', error);
+    res.status(500).json({ error: 'Server error while fetching notification count' });
+  }
+});
+
+// PUT: Mark notification as read/unread
+router.put('/api/notifications/:notificationId/read', async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+    const { isRead = true } = req.body;
+
+    if (!notificationId) {
+      return res.status(400).json({ error: 'Notification ID is required' });
+    }
+
+    const updateQuery = 'UPDATE notifications SET is_read = ? WHERE id = ?';
+    const result = await db.query(updateQuery, [isRead, notificationId]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.json({ 
+      success: true, 
+      message: `Notification marked as ${isRead ? 'read' : 'unread'}` 
+    });
+  } catch (error) {
+    console.error('Error updating notification read status:', error);
+    res.status(500).json({ error: 'Server error while updating notification' });
+  }
+});
+
+// PUT: Mark all notifications as read for a user
+router.put('/api/notifications/:userId/mark-all-read', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    const updateQuery = 'UPDATE notifications SET is_read = TRUE WHERE user_id = ? AND is_read = FALSE';
+    const result = await db.query(updateQuery, [userId]);
+
+    res.json({ 
+      success: true, 
+      message: 'All notifications marked as read',
+      updatedCount: result.affectedRows
+    });
+  } catch (error) {
+    console.error('Error marking all notifications as read:', error);
+    res.status(500).json({ error: 'Server error while updating notifications' });
+  }
+});
+
+// DELETE: Delete a notification
+router.delete('/api/notifications/:notificationId', async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+
+    if (!notificationId) {
+      return res.status(400).json({ error: 'Notification ID is required' });
+    }
+
+    const deleteQuery = 'DELETE FROM notifications WHERE id = ?';
+    const result = await db.query(deleteQuery, [notificationId]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Notification deleted successfully' 
+    });
+  } catch (error) {
+    console.error('Error deleting notification:', error);
+    res.status(500).json({ error: 'Server error while deleting notification' });
+  }
+});
+
+  // Test endpoint to verify expense updates when participant joins
+  router.get('/api/test-expense-updates/:eventId', async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      
+      // Get all participants in the event
+      const participants = await db.query('SELECT id, name, user_id FROM participants WHERE event_id = ?', [eventId]);
+      
+      // Get all expenses in the event with their paid_by values
+      const expenses = await db.query('SELECT id, description, paid_by, amount FROM expenses WHERE event_id = ?', [eventId]);
+      
+      // Check for mismatches between participant names and expense paid_by values
+      const participantNames = participants.map(p => p.name);
+      const expensePaidByValues = [...new Set(expenses.map(e => e.paid_by))];
+      
+      const orphanedPaidByValues = expensePaidByValues.filter(paidBy => 
+        !participantNames.includes(paidBy)
+      );
+      
+      res.json({
+        eventId,
+        participants: participants.map(p => ({
+          id: p.id,
+          name: p.name,
+          hasUser: !!p.user_id,
+          userId: p.user_id
+        })),
+        expenses: expenses.map(e => ({
+          id: e.id,
+          description: e.description,
+          paid_by: e.paid_by,
+          amount: e.amount,
+          paidByExists: participantNames.includes(e.paid_by)
+        })),
+        summary: {
+          totalParticipants: participants.length,
+          participantsWithUsers: participants.filter(p => p.user_id).length,
+          totalExpenses: expenses.length,
+          orphanedPaidByValues,
+          hasOrphanedExpenses: orphanedPaidByValues.length > 0
+        }
+      });
+    } catch (error) {
+      console.error('Error in test endpoint:', error);
+      res.status(500).json({ error: 'Server error' });
+    }
+  });
 
   return router;
 };

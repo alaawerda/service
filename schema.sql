@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS expenses (
   paid_by VARCHAR(255) NOT NULL,
   created_date DATE NOT NULL,
   split_type ENUM('equal', 'custom', 'shares') NOT NULL,
-  receipt_image TEXT,
+  receipt_image LONGTEXT,
   currency TEXT,
   created_at TIMESTAMP DEFAULT current_timestamp(),
   FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
@@ -103,3 +103,33 @@ CREATE TABLE IF NOT EXISTS banking_info (
 
 -- Add indexes for better query performance
 CREATE INDEX idx_banking_info_user ON banking_info(user_id);
+
+-- Create notifications table to store user notifications with read/unread status
+CREATE TABLE IF NOT EXISTS notifications (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  message TEXT NOT NULL,
+  type ENUM('debt_request', 'debt_approval', 'debt_rejection', 'debt_payment', 'debt_update', 'debt_delete') NOT NULL,
+  action_user_id INT, -- User who performed the action
+  action_user_name VARCHAR(255), -- Name of user who performed the action
+  amount DECIMAL(10, 2),
+  currency VARCHAR(3),
+  event_id INT,
+  event_name VARCHAR(255),
+  debt_id VARCHAR(255),
+  reference_data JSON, -- Additional data like debt/request details
+  is_read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT current_timestamp(),
+  updated_at TIMESTAMP DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (action_user_id) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+);
+
+-- Add indexes for notifications
+CREATE INDEX idx_notifications_user ON notifications(user_id);
+CREATE INDEX idx_notifications_type ON notifications(type);
+CREATE INDEX idx_notifications_read ON notifications(is_read);
+CREATE INDEX idx_notifications_created ON notifications(created_at);
+CREATE INDEX idx_notifications_event ON notifications(event_id);
