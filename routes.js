@@ -1,10 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const balanceService = require('./services/balanceService');
-const { Expo } = require('expo-server-sdk');
+const { Expo, ExpoPushToken } = require('expo-server-sdk');
+const notificationConfig = require('./config/notifications');
 
-// Create a new Expo SDK client
-const expo = new Expo();
+// Utiliser l'instance Expo configurée
+const expo = notificationConfig.expo;
+
+// Fonction utilitaire pour valider les tokens Expo
+function isValidExpoPushToken(token) {
+  return ExpoPushToken.isValid(token);
+}
 
 // Fonction pour générer un code unique pour l'événement
 const generateUniqueEventCode = () => {
@@ -26,49 +32,151 @@ const getDefaultBalances = () => {
 // balanceService is already an instance because of how it's exported
 const balanceServiceInstance = balanceService;
 
+// Logger class for server-side push notifications
+class ServerNotificationLogger {
+  constructor() {
+    if (ServerNotificationLogger.instance) {
+      return ServerNotificationLogger.instance;
+    }
+    this.logs = [];
+    this.MAX_LOGS = 1000;
+    ServerNotificationLogger.instance = this;
+  }
+
+  formatLog(level, message, data = {}) {
+    const timestamp = new Date().toISOString();
+    const logEntry = {
+      timestamp,
+      level,
+      message,
+      data,
+      environment: process.env.NODE_ENV
+    };
+    const logString = JSON.stringify(logEntry);
+    this.logs.push(logString);
+    
+    if (this.logs.length > this.MAX_LOGS) {
+      this.logs = this.logs.slice(-this.MAX_LOGS);
+    }
+    
+    return logString;
+  }
+
+  info(message, data) {
+    const logString = this.formatLog('INFO', message, data);
+    console.log('🔔 [SERVER INFO]', message, data || '');
+    return logString;
+  }
+
+  debug(message, data) {
+    const logString = this.formatLog('DEBUG', message, data);
+    console.log('🔍 [SERVER DEBUG]', message, data || '');
+    return logString;
+  }
+
+  warn(message, data) {
+    const logString = this.formatLog('WARN', message, data);
+    console.warn('⚠️ [SERVER WARN]', message, data || '');
+    return logString;
+  }
+
+  error(message, error) {
+    const logString = this.formatLog('ERROR', message, error);
+    console.error('❌ [SERVER ERROR]', message, error || '');
+    return logString;
+  }
+
+  getLogs() {
+    return [...this.logs];
+  }
+
+  clearLogs() {
+    this.logs = [];
+  }
+}
+
+const serverLogger = new ServerNotificationLogger();
+
 // Fonction utilitaire pour envoyer des notifications push
 async function sendPushNotification(pushMessage) {
   try {
-    console.log('🔔 Attempting to send push notification:', {
+    serverLogger.info('Attempting to send push notification', {
       to: pushMessage.to,
       title: pushMessage.title,
-      type: pushMessage.data?.type
+      type: pushMessage.data?.type,
+      timestamp: new Date().toISOString()
     });
 
     // Vérifier que le token est valide
     if (!Expo.isExpoPushToken(pushMessage.to)) {
-      console.error('❌ Invalid Expo push token:', pushMessage.to);
+      serverLogger.error('Invalid Expo push token', { token: pushMessage.to });
       return false;
     }
 
     const chunks = expo.chunkPushNotifications([pushMessage]);
     let notificationSent = false;
 
+    serverLogger.debug('Processing push notification chunks', { 
+      numberOfChunks: chunks.length,
+      messageSize: JSON.stringify(pushMessage).length
+    });
+
     for (const chunk of chunks) {
       try {
         const tickets = await expo.sendPushNotificationsAsync(chunk);
-        console.log('✅ Push notification tickets:', tickets);
+        serverLogger.info('Push notification tickets received', { 
+          tickets,
+          chunkSize: chunk.length
+        });
 
         // Vérifier les erreurs dans les tickets
         const errors = tickets.filter(ticket => ticket.status === 'error');
         if (errors.length > 0) {
-          console.error('❌ Push notification errors:', errors);
+          serverLogger.error('Push notification errors in tickets', { 
+            errors,
+            chunkIndex: chunks.indexOf(chunk)
+          });
         } else {
           notificationSent = true;
+          serverLogger.info('Successfully sent push notification chunk', {
+            chunkIndex: chunks.indexOf(chunk),
+            tickets
+          });
         }
       } catch (error) {
-        console.error('❌ Error sending push notification chunk:', error);
+        serverLogger.error('Error sending push notification chunk', {
+          error: error.message,
+          chunkIndex: chunks.indexOf(chunk),
+          stack: error.stack
+        });
       }
+    }
+
+    if (notificationSent) {
+      serverLogger.info('Push notification process completed successfully', {
+        messageId: pushMessage.data?.messageId,
+        recipientToken: pushMessage.to
+      });
+    } else {
+      serverLogger.warn('Push notification process completed with errors', {
+        messageId: pushMessage.data?.messageId,
+        recipientToken: pushMessage.to
+      });
     }
 
     return notificationSent;
   } catch (error) {
-    console.error('❌ Error in sendPushNotification:', error);
+    serverLogger.error('Critical error in sendPushNotification', {
+      error: error.message,
+      stack: error.stack,
+      message: pushMessage
+    });
     return false;
   }
 }
 
-module.exports = (db) => {
+// Create the router function
+const createRouter = (db) => {
 
 // Routes pour les informations bancaires
 
@@ -1732,39 +1840,112 @@ router.get('/api/reimbursements/:userId', async (req, res) => {
 
 // POST: Register a new device token
 router.post('/api/device-tokens', async (req, res) => {
+  console.log('🔔 [SERVER] ====== DEVICE TOKEN REGISTRATION START ======');
+  console.log('🔔 [SERVER] Request headers:', req.headers);
+  console.log('🔔 [SERVER] Request body:', JSON.stringify(req.body, null, 2));
+  
   try {
     const { userId, token, deviceType } = req.body;
     
+    // Log each field separately
+    console.log('🔔 [SERVER] Parsed fields:', {
+      userId: userId ? `exists (${userId})` : 'missing',
+      token: token ? `exists (${token.substring(0, 10)}...)` : 'missing',
+      deviceType: deviceType ? `exists (${deviceType})` : 'missing'
+    });
+    
     if (!userId || !token || !deviceType) {
+      console.warn('⚠️ [SERVER] Missing required fields:', { 
+        hasUserId: !!userId, 
+        hasToken: !!token, 
+        hasDeviceType: !!deviceType 
+      });
       return res.status(400).json({ error: 'User ID, token, and device type are required' });
     }
 
     // Check if the user exists
-    const userCheck = await db.query('SELECT id FROM users WHERE id = ?', [userId]);
+    console.log('🔔 [SERVER] Checking if user exists:', userId);
+    const userCheck = await db.query('SELECT id, username FROM users WHERE id = ?', [userId]);
     if (!userCheck || userCheck.length === 0) {
+      console.warn('⚠️ [SERVER] User not found:', userId);
       return res.status(404).json({ error: 'User not found' });
     }
+    console.log('✅ [SERVER] User found:', { id: userCheck[0].id, username: userCheck[0].username });
 
     // Check if token already exists
-    const existingToken = await db.query('SELECT id FROM device_tokens WHERE token = ?', [token]);
+    console.log('🔔 [SERVER] Checking if token already exists');
+    const existingToken = await db.query('SELECT id, user_id, device_type FROM device_tokens WHERE token = ?', [token]);
     if (existingToken && existingToken.length > 0) {
+      console.log('🔔 [SERVER] Token exists:', {
+        tokenId: existingToken[0].id,
+        currentUserId: existingToken[0].user_id,
+        currentDeviceType: existingToken[0].device_type,
+        newUserId: userId,
+        newDeviceType: deviceType
+      });
+      
       // Update the existing token
-      await db.query(
-        'UPDATE device_tokens SET user_id = ?, device_type = ? WHERE token = ?',
+      const updateResult = await db.query(
+        'UPDATE device_tokens SET user_id = ?, device_type = ?, updated_at = NOW() WHERE token = ?',
         [userId, deviceType, token]
       );
+      console.log('✅ [SERVER] Token update result:', {
+        affectedRows: updateResult.affectedRows,
+        changedRows: updateResult.changedRows
+      });
     } else {
+      console.log('🔔 [SERVER] Token is new, inserting for user:', userId);
       // Insert new token
-      await db.query(
+      const insertResult = await db.query(
         'INSERT INTO device_tokens (user_id, token, device_type) VALUES (?, ?, ?)',
         [userId, token, deviceType]
       );
+      console.log('✅ [SERVER] New token insert result:', {
+        insertId: insertResult.insertId,
+        affectedRows: insertResult.affectedRows
+      });
     }
 
-    res.json({ success: true, message: 'Device token registered successfully' });
+    // Verify the token was saved
+    const verifyToken = await db.query(
+      'SELECT id, user_id, device_type, created_at, updated_at FROM device_tokens WHERE token = ? AND user_id = ?',
+      [token, userId]
+    );
+    console.log('🔔 [SERVER] Verification query result:', verifyToken.length > 0 ? {
+      found: true,
+      tokenId: verifyToken[0].id,
+      userId: verifyToken[0].user_id,
+      deviceType: verifyToken[0].device_type,
+      createdAt: verifyToken[0].created_at,
+      updatedAt: verifyToken[0].updated_at
+    } : 'Token not found');
+
+    console.log('🔔 [SERVER] ====== DEVICE TOKEN REGISTRATION END ======');
+
+    res.json({ 
+      success: true, 
+      message: 'Device token registered successfully',
+      tokenSaved: verifyToken.length > 0,
+      tokenDetails: verifyToken.length > 0 ? {
+        id: verifyToken[0].id,
+        userId: verifyToken[0].user_id,
+        deviceType: verifyToken[0].device_type,
+        createdAt: verifyToken[0].created_at,
+        updatedAt: verifyToken[0].updated_at
+      } : null
+    });
   } catch (error) {
-    console.error('Error registering device token:', error);
-    res.status(500).json({ error: 'Server error while registering device token' });
+    console.error('❌ [SERVER] Error registering device token:', error);
+    console.error('❌ [SERVER] Error details:', {
+      message: error.message,
+      code: error.code,
+      sqlMessage: error.sqlMessage,
+      sqlState: error.sqlState
+    });
+    res.status(500).json({ 
+      error: 'Server error while registering device token',
+      details: error.message
+    });
   }
 });
 
@@ -2130,4 +2311,10 @@ router.delete('/api/notifications/:notificationId', async (req, res) => {
   });
 
   return router;
+};
+
+// Export both the router creator and the logger
+module.exports = {
+  createRouter,
+  serverNotificationLogger: serverLogger
 };

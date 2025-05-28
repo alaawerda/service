@@ -6,7 +6,8 @@ const sharp = require('sharp');
 const expenseRoutes = require('./routes/expenseRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 const db = require('./db');
-const routes = require('./routes')(db);
+const { createRouter } = require('./routes');
+const routes = createRouter(db);
 const authRoutes = require('./routes/authRoutes')(db);
 const reimbursementRoutes = require('./routes/reimbursementRoutes')(db);
 
