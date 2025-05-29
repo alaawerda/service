@@ -1,16 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const balanceService = require('./services/balanceService');
-const { Expo, ExpoPushToken } = require('expo-server-sdk');
-const notificationConfig = require('./config/notifications');
+const { Expo } = require('expo-server-sdk');
 
-// Utiliser l'instance Expo configurée
-const expo = notificationConfig.expo;
-
-// Fonction utilitaire pour valider les tokens Expo
-function isValidExpoPushToken(token) {
-  return ExpoPushToken.isValid(token);
-}
+// Create a new Expo SDK client
+const expo = new Expo();
 
 // Fonction pour générer un code unique pour l'événement
 const generateUniqueEventCode = () => {
@@ -108,9 +102,31 @@ async function sendPushNotification(pushMessage) {
     });
 
     // Vérifier que le token est valide
-    if (!Expo.isExpoPushToken(pushMessage.to)) {
-      serverLogger.error('Invalid Expo push token', { token: pushMessage.to });
+    if (!pushMessage.to || typeof pushMessage.to !== 'string') {
+      serverLogger.error('Invalid push token - not a string', { token: pushMessage.to });
       return false;
+    }
+
+    // Improved token validation for ExponentPushToken format
+    const isValidToken = pushMessage.to.startsWith('ExponentPushToken[') && 
+                         pushMessage.to.endsWith(']');
+    
+    if (!isValidToken) {
+      serverLogger.error('Invalid Expo push token format', { 
+        token: pushMessage.to,
+        isExpoToken: Expo.isExpoPushToken(pushMessage.to)
+      });
+      
+      // Try to fix the token format if possible
+      if (pushMessage.to.includes('ExponentPushToken')) {
+        const tokenMatch = pushMessage.to.match(/ExponentPushToken\[(.*?)\]/);
+        if (tokenMatch && tokenMatch[0]) {
+          pushMessage.to = tokenMatch[0];
+          serverLogger.info('Fixed token format', { newToken: pushMessage.to });
+        }
+      } else {
+        return false;
+      }
     }
 
     const chunks = expo.chunkPushNotifications([pushMessage]);
@@ -118,7 +134,8 @@ async function sendPushNotification(pushMessage) {
 
     serverLogger.debug('Processing push notification chunks', { 
       numberOfChunks: chunks.length,
-      messageSize: JSON.stringify(pushMessage).length
+      messageSize: JSON.stringify(pushMessage).length,
+      tokenUsed: pushMessage.to
     });
 
     for (const chunk of chunks) {
@@ -702,10 +719,23 @@ router.put('/api/reimbursement-requests/:id', async (req, res) => {
         );
 
         if (tokenResponse && tokenResponse.length > 0) {
-          const recipientToken = tokenResponse[0].token;
-          console.log(`📱 Found device token for user ${requestInfo.requester_id}: ${recipientToken ? 'EXISTS' : 'NULL'}`);
+          let recipientToken = tokenResponse[0].token;
+          console.log(`📱 Found device token for user ${requestInfo.requester_id}: ${recipientToken ? recipientToken.substring(0, 15) + '...' : 'NULL'}`);
 
           if (recipientToken) {
+            // Ensure token is in the correct format for Expo push notifications
+            const isValidToken = recipientToken.startsWith('ExponentPushToken[') && recipientToken.endsWith(']');
+            if (!isValidToken && recipientToken.includes('ExponentPushToken')) {
+              const tokenMatch = recipientToken.match(/ExponentPushToken\[(.*?)\]/);
+              if (tokenMatch && tokenMatch[0]) {
+                recipientToken = tokenMatch[0];
+                console.log(`🔧 Fixed token format for user ${requestInfo.requester_id}: ${recipientToken}`);
+              }
+            }
+            
+            // Enhanced logging for debugging
+            console.log(`🚀 Preparing push notification for user ${requestInfo.requester_id} with token: ${recipientToken}`);
+            
             const pushMessage = {
               to: recipientToken,
               sound: 'default',
@@ -1850,7 +1880,7 @@ router.post('/api/device-tokens', async (req, res) => {
     // Log each field separately
     console.log('🔔 [SERVER] Parsed fields:', {
       userId: userId ? `exists (${userId})` : 'missing',
-      token: token ? `exists (${token.substring(0, 10)}...)` : 'missing',
+      token: token ? `exists (${token.substring(0, 20)}...)` : 'missing',
       deviceType: deviceType ? `exists (${deviceType})` : 'missing'
     });
     
@@ -1861,6 +1891,21 @@ router.post('/api/device-tokens', async (req, res) => {
         hasDeviceType: !!deviceType 
       });
       return res.status(400).json({ error: 'User ID, token, and device type are required' });
+    }
+
+    // Ensure proper token format
+    let formattedToken = token;
+    const isValidToken = token.startsWith('ExponentPushToken[') && token.endsWith(']');
+    
+    if (!isValidToken && token.includes('ExponentPushToken')) {
+      const tokenMatch = token.match(/ExponentPushToken\[(.*?)\]/);
+      if (tokenMatch && tokenMatch[0]) {
+        formattedToken = tokenMatch[0];
+        console.log('🔧 [SERVER] Fixed token format:', {
+          original: token.substring(0, 20) + '...',
+          fixed: formattedToken
+        });
+      }
     }
 
     // Check if the user exists
@@ -1874,7 +1919,7 @@ router.post('/api/device-tokens', async (req, res) => {
 
     // Check if token already exists
     console.log('🔔 [SERVER] Checking if token already exists');
-    const existingToken = await db.query('SELECT id, user_id, device_type FROM device_tokens WHERE token = ?', [token]);
+    const existingToken = await db.query('SELECT id, user_id, device_type FROM device_tokens WHERE token = ?', [formattedToken]);
     if (existingToken && existingToken.length > 0) {
       console.log('🔔 [SERVER] Token exists:', {
         tokenId: existingToken[0].id,
@@ -1887,7 +1932,7 @@ router.post('/api/device-tokens', async (req, res) => {
       // Update the existing token
       const updateResult = await db.query(
         'UPDATE device_tokens SET user_id = ?, device_type = ?, updated_at = NOW() WHERE token = ?',
-        [userId, deviceType, token]
+        [userId, deviceType, formattedToken]
       );
       console.log('✅ [SERVER] Token update result:', {
         affectedRows: updateResult.affectedRows,
@@ -1898,7 +1943,7 @@ router.post('/api/device-tokens', async (req, res) => {
       // Insert new token
       const insertResult = await db.query(
         'INSERT INTO device_tokens (user_id, token, device_type) VALUES (?, ?, ?)',
-        [userId, token, deviceType]
+        [userId, formattedToken, deviceType]
       );
       console.log('✅ [SERVER] New token insert result:', {
         insertId: insertResult.insertId,
@@ -1909,7 +1954,7 @@ router.post('/api/device-tokens', async (req, res) => {
     // Verify the token was saved
     const verifyToken = await db.query(
       'SELECT id, user_id, device_type, created_at, updated_at FROM device_tokens WHERE token = ? AND user_id = ?',
-      [token, userId]
+      [formattedToken, userId]
     );
     console.log('🔔 [SERVER] Verification query result:', verifyToken.length > 0 ? {
       found: true,
@@ -1958,17 +2003,44 @@ router.get('/api/device-tokens/:userId', async (req, res) => {
       return res.status(400).json({ error: 'User ID is required' });
     }
 
+    console.log(`🔍 [SERVER] Fetching device token for user ${userId}`);
+    
     const tokens = await db.query(
-      'SELECT token FROM device_tokens WHERE user_id = ?',
+      'SELECT token FROM device_tokens WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1',
       [userId]
     );
 
     if (!tokens || tokens.length === 0) {
+      console.log(`⚠️ [SERVER] No device tokens found for user ${userId}`);
       return res.status(404).json({ error: 'No device tokens found for user' });
     }
 
+    // Ensure token is properly formatted
+    let token = tokens[0].token;
+    const isValidToken = token.startsWith('ExponentPushToken[') && token.endsWith(']');
+    
+    if (!isValidToken && token.includes('ExponentPushToken')) {
+      const tokenMatch = token.match(/ExponentPushToken\[(.*?)\]/);
+      if (tokenMatch && tokenMatch[0]) {
+        token = tokenMatch[0];
+        console.log(`🔧 [SERVER] Fixed token format for user ${userId}:`, {
+          original: tokens[0].token.substring(0, 20) + '...',
+          fixed: token
+        });
+        
+        // Update the token in the database with the correct format
+        await db.query(
+          'UPDATE device_tokens SET token = ? WHERE user_id = ? AND token = ?',
+          [token, userId, tokens[0].token]
+        );
+        console.log(`✅ [SERVER] Updated token format in database for user ${userId}`);
+      }
+    }
+
+    console.log(`✅ [SERVER] Returning token for user ${userId}: ${token.substring(0, 15)}...`);
+    
     // Return the most recent token
-    res.json({ token: tokens[0].token });
+    res.json({ token: token });
   } catch (error) {
     console.error('Error fetching device token:', error);
     res.status(500).json({ error: 'Server error while fetching device token' });
@@ -1984,14 +2056,35 @@ router.post('/api/send-push-notification', async (req, res) => {
       return res.status(400).json({ error: 'Recipient token, title, and body are required' });
     }
 
-    // Validate the token
-    if (!Expo.isExpoPushToken(to)) {
-      return res.status(400).json({ error: 'Invalid Expo push token' });
+    // Validate the token with improved validation
+    if (typeof to !== 'string') {
+      return res.status(400).json({ error: 'Invalid push token - not a string' });
+    }
+
+    // Improved token validation and fixing for ExponentPushToken format
+    let recipientToken = to;
+    const isValidToken = to.startsWith('ExponentPushToken[') && to.endsWith(']');
+    
+    if (!isValidToken) {
+      console.log('Token may have invalid format, attempting to fix:', to);
+      
+      // Try to fix the token format if possible
+      if (to.includes('ExponentPushToken')) {
+        const tokenMatch = to.match(/ExponentPushToken\[(.*?)\]/);
+        if (tokenMatch && tokenMatch[0]) {
+          recipientToken = tokenMatch[0];
+          console.log('Fixed token format:', recipientToken);
+        } else {
+          return res.status(400).json({ error: 'Could not fix invalid Expo push token format' });
+        }
+      } else {
+        return res.status(400).json({ error: 'Invalid Expo push token format' });
+      }
     }
 
     // Create the message
     const message = {
-      to,
+      to: recipientToken,
       sound: sound || 'default',
       title,
       body,
