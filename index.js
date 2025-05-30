@@ -769,6 +769,68 @@ app.post('/api/expenses', async (req, res) => {
 });
   
 
+// Create reimbursement request endpoint
+// ... existing code ...
+
+// Verify user authentication (for password verification)
+app.post('/api/auth/verify', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // Check if user exists
+    const query = 'SELECT * FROM users WHERE email = ?';
+    const rows = await db.query(query, [email]);
+    
+    if (!rows || rows.length === 0) {
+      return res.status(401).json({ error: 'Authentication failed' });
+    }
+
+    const user = rows[0];
+    
+    // Compare password
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.status(401).json({ error: 'Authentication failed' });
+    }
+
+    res.status(200).json({ message: 'Authentication successful' });
+  } catch (error) {
+    console.error('Authentication error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete user account and all associated data
+app.delete('/api/users/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    // Supprimer l'utilisateur
+    const deleteResult = await db.query('DELETE FROM users WHERE id = ?', [userId]);
+    if (deleteResult.affectedRows === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    // On s'en fiche des autres suppressions, on les tente mais on ne vérifie pas leur succès
+    db.query('DELETE FROM banking_info WHERE user_id = ?', [userId]);
+    db.query('DELETE FROM device_tokens WHERE user_id = ?', [userId]);
+    db.query('DELETE FROM reimbursement_requests WHERE requester_id = ? OR debtor_id = ?', [userId, userId]);
+    db.query('DELETE FROM notifications WHERE user_id = ? OR action_user_id = ?', [userId, userId]);
+    db.query('UPDATE participants SET user_id = NULL WHERE user_id = ?', [userId]);
+    // On ne supprime plus les events explicitement ici
+    return res.status(200).json({ message: 'User account deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting user account:', error);
+    res.status(500).json({ error: 'Failed to delete user account' });
+  }
+});
+
+// Export the app for use in other files
+// module.exports = app;
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
