@@ -1,4 +1,5 @@
 const db = require('../db');
+const Joi = require('joi');
 
 class BalanceService {
   /**
@@ -9,6 +10,10 @@ class BalanceService {
    */
   async calculateDebts(eventId, connectedUserId) {
     try {
+      const { error } = Joi.number().integer().required().validate(eventId);
+      if (error) {
+        throw new Error('Invalid event ID');
+      }
       console.log(`Calculating debts for event ${eventId} and user ${connectedUserId}`);
       
       // 1. Récupérer toutes les dépenses de l'événement avec leurs participants
@@ -26,17 +31,9 @@ class BalanceService {
       // 4. Récupérer tous les remboursements de l'événement avec leur statut
       const reimbursements = await db.query(`
         SELECT 
-          r.*,
+          r.id, r.amount, r.date, r.created_at, r.debtor_id, r.creditor_id, r.event_id, r.status,
           pd.name as debtor_name,
-          pc.name as creditor_name,
-          r.status,
-          r.id,
-          r.amount,
-          r.date,
-          r.created_at,
-          r.debtor_id,
-          r.creditor_id,
-          r.event_id
+          pc.name as creditor_name
         FROM reimbursements r
         JOIN participants pd ON r.debtor_id = pd.id
         JOIN participants pc ON r.creditor_id = pc.id

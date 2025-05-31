@@ -29,13 +29,13 @@ connectTimeout: 60000
 
 console.log(process.env.DB_HOST);
 const pool = mysql.createPool({
-  host: 'mysql-34b2dc40-ala-ff3b.f.aivencloud.com',
-  user: 'avnadmin',
-  password: 'AVNS_FJeqAnK-TVYrzmalQn4',
-  database: 'wecount',
+  host: process.env.DB_HOST || 'mysql-34b2dc40-ala-ff3b.f.aivencloud.com',
+  user: process.env.DB_USER || 'avnadmin',
+  password: process.env.DB_PASSWORD || 'AVNS_FJeqAnK-TVYrzmalQn4',
+  database: process.env.DB_NAME || 'wecount',
   waitForConnections: true,
-  port: 21099,
-  ssl: {
+  port: process.env.DB_PORT || 21099,
+  ssl: process.env.DB_SSL ? JSON.parse(process.env.DB_SSL) : {
     rejectUnauthorized: false  // Allow self-signed certificates
   },
   connectionLimit: 10,

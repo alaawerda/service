@@ -10,6 +10,8 @@ const { createRouter } = require('./routes');
 const routes = createRouter(db);
 const authRoutes = require('./routes/authRoutes')(db);
 const reimbursementRoutes = require('./routes/reimbursementRoutes')(db);
+const helmet = require('helmet');
+const Joi = require('joi');
 
 // Import our custom CORS middleware 123
 const { corsMiddleware, additionalCorsHeaders, optionsCorsHandler } = require('./middleware/corsMiddleware');
@@ -32,6 +34,9 @@ app.use(additionalCorsHeaders);
 // Parse JSON bodies (must come after CORS)
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Use Helmet to enhance security
+app.use(helmet());
 
 app.use('/api/expenses', expenseRoutes);
 
@@ -87,7 +92,14 @@ app.use((req, res, next) => {
   next();
 });
 
-// Get user data endpoint
+// Example validation schema for user data
+const userDataSchema = Joi.object({
+  email: Joi.string().email().required(),
+  password: Joi.string().min(8).required(),
+  username: Joi.string().alphanum().min(3).max(30).required()
+});
+
+// Limit data exposure in user data endpoint
 app.get('/api/user-data', async (req, res) => {
   try {
     if (!req.session || !req.session.user || !req.session.user.id) {
@@ -96,16 +108,14 @@ app.get('/api/user-data', async (req, res) => {
 
     const userId = req.session.user.id;
     const query = 'SELECT id, username, email FROM users WHERE id = ?';
-    
     try {
       const results = await db.query(query, [userId]);
-      
       if (!results || results.length === 0) {
         return res.status(404).json({ error: 'User not found' });
       }
-      
+
       const userData = results[0];
-      res.json(userData);
+      res.json({ id: userData.id, username: userData.username, email: userData.email });
     } catch (dbError) {
       console.error('Error fetching user data:', dbError);
       return res.status(500).json({ error: 'Internal server error' });
@@ -249,18 +259,16 @@ app.get('/api/user', (req, res) => {
 });
 app.post('/api/register', async (req, res) => {
   try {
+    const { error } = userDataSchema.validate(req.body);
+    if (error) {
+      return res.status(400).json({ error: error.details[0].message });
+    }
     const { email, password, username } = req.body;
 
-    // Validate input
-    if (!email || !password || !username) {
-      return res.status(400).json({ error: 'All fields are required' });
-    }
-
     // Check if user already exists
-    const checkQuery = 'SELECT * FROM users WHERE email = ?';
+    const checkQuery = 'SELECT id FROM users WHERE email = ?';
     try {
       const rows = await db.query(checkQuery, [email]);
-      
       if (rows && rows.length > 0) {
         return res.status(400).json({ error: 'User already exists' });
       }
@@ -272,7 +280,7 @@ app.post('/api/register', async (req, res) => {
       const insertQuery = 'INSERT INTO users (email, password, username) VALUES (?, ?, ?)';
       const result = await db.query(insertQuery, [email, hashedPassword, username]);
       const userId = result.insertId;
-      
+
       // Store user data in session
       req.session.user = {
         id: userId,
@@ -283,7 +291,6 @@ app.post('/api/register', async (req, res) => {
       res.status(201).json({ message: 'User registered successfully' });
     } catch (dbError) {
       console.error('Database error:', dbError);
-      // Retourner le message SQL brut pour les doublons (username/email)
       if (dbError.code === 'ER_DUP_ENTRY') {
         const sqlMsg = dbError.sqlMessage || 'Duplicate entry';
         return res.status(400).json({ error: sqlMsg });
@@ -825,6 +832,42 @@ app.delete('/api/users/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting user account:', error);
     res.status(500).json({ error: 'Failed to delete user account' });
+  }
+});
+
+// Get previous participants endpoint
+app.get('/api/previous-participants', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Requête modifiée pour être plus simple et plus fiable
+    const query = `
+      SELECT DISTINCT u.id, u.username
+      FROM users u
+      INNER JOIN participants p ON u.id = p.user_id
+      INNER JOIN events e ON p.event_id = e.id
+      WHERE EXISTS (
+        SELECT 1
+        FROM participants p2
+        WHERE p2.event_id = e.id
+        AND p2.user_id = ?
+      )
+      AND u.id != ?
+      AND u.id IS NOT NULL
+      ORDER BY u.username
+    `;
+
+    console.log('[Previous Participants] Fetching for user:', userId);
+    const results = await db.query(query, [userId, userId]);
+    console.log('[Previous Participants] Found:', results.length, 'participants');
+    
+    res.json(results);
+  } catch (error) {
+    console.error('[Previous Participants] Error:', error);
+    res.status(500).json({ error: 'Error fetching previous participants' });
   }
 });
 

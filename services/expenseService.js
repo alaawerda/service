@@ -1,7 +1,31 @@
 const db = require('../db');
+const Joi = require('joi');
+
+// Example validation schema for expense data
+const expenseDataSchema = Joi.object({
+  description: Joi.string().required(),
+  amount: Joi.number().positive().required(),
+  event_id: Joi.number().integer().required(),
+  paid_by: Joi.string().required(),
+  created_date: Joi.date().iso().required(),
+  split_type: Joi.string().valid('equal', 'custom', 'shares').required(),
+  currency: Joi.string().length(3).allow(null, ''),
+  participants: Joi.array().items(Joi.object({
+    id: Joi.number().integer().required(),
+    name: Joi.string().required(),
+    selected: Joi.boolean().required(),
+    share_amount: Joi.number().positive().allow(null),
+    share_count: Joi.number().integer().allow(null)
+  })).required(),
+  receipt_image: Joi.string().allow(null, '')
+});
 
 class ExpenseService {
   async updateExpense(expenseId, expenseData) {
+    const { error } = expenseDataSchema.validate(expenseData);
+    if (error) {
+      throw new Error('Invalid expense data');
+    }
     const { description, amount, event_id, paid_by, created_date, split_type, currency, participants, receipt_image } = expenseData;
     // Ensure created_date is in YYYY-MM-DD format for MySQL DATE type
     let formattedCreatedDate = created_date;

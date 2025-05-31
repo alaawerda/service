@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const balanceService = require('./services/balanceService');
 const { Expo } = require('expo-server-sdk');
+// Import Joi for input validation
+const Joi = require('joi');
 
 // Create a new Expo SDK client
 const expo = new Expo();
@@ -392,16 +394,29 @@ router.get('/api/reimbursement-requests', async (req, res) => {
   }
 });
 
-// POST: Créer une nouvelle demande de remboursement
+// Example validation schema for reimbursement requests
+const reimbursementRequestSchema = Joi.object({
+  eventId: Joi.number().integer().required(),
+  debtorId: Joi.number().integer().required(),
+  amount: Joi.number().positive().required(),
+  currency: Joi.string().length(3).required(),
+  message: Joi.string().allow(null, ''),
+  paymentMethod: Joi.string().allow(null, ''),
+  paymentDetails: Joi.string().allow(null, '')
+});
+
+// Validate reimbursement request data
 router.post('/api/reimbursement-requests', async (req, res) => {
   try {
+    const { error } = reimbursementRequestSchema.validate(req.body);
+    if (error) {
+      return res.status(400).json({ error: error.details[0].message });
+    }
     const { eventId, debtorId, amount, currency, message, paymentMethod, paymentDetails } = req.body;
     const { userId } = req.query;
     
-    if (!userId || !eventId || !debtorId || !amount || !currency) {
-      return res.status(400).json({ 
-        error: 'User ID, event ID, debtor ID, amount, and currency are required'
-      });
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
     }
     
     // Récupérer les informations complètes pour les notifications
@@ -466,113 +481,14 @@ router.post('/api/reimbursement-requests', async (req, res) => {
       ]);
       
       console.log(`✅ Request notification created in database for user ${debtorId}`);
-      
-      // Tenter d'envoyer une notification push
-      try {
-        console.log(`🔔 Attempting to send request push notification to user ${debtorId}`);
-        
-        const tokenResponse = await db.query(
-          'SELECT token FROM device_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
-          [debtorId]
-        );
-        
-        if (tokenResponse && tokenResponse.length > 0) {
-          const recipientToken = tokenResponse[0].token;
-          console.log(`📱 Found device token for user ${debtorId}: ${recipientToken ? 'EXISTS' : 'NULL'}`);
-          
-          // Vérifier que le token est valide pour Expo
-          if (expo.isExpoPushToken(recipientToken)) {
-            const pushMessage = {
-              to: recipientToken,
-              sound: 'default',
-              title,
-              body,
-              data: {
-                type: notificationType,
-                requestId: result.insertId,
-                eventId: eventId,
-                amount: amount,
-                currency: currency,
-                timestamp: new Date().toISOString(),
-                requesterName: requestInfo.requester_username,
-                eventName: requestInfo.event_name,
-                paymentMethod: paymentMethod || null,
-                message: message || null
-              },
-              priority: 'high',
-              badge: 1,
-              android: {
-                color: '#2196F3', // Bleu pour les demandes
-                channelId: 'default',
-                priority: 'high',
-                smallIcon: '@mipmap/ic_launcher',
-                largeIcon: '@mipmap/ic_launcher'
-              },
-              ios: {
-                icon: '@mipmap/ic_launcher'
-              }
-            };
-            
-            console.log('📤 SENDING REIMBURSEMENT REQUEST push notification:', {
-              to: recipientToken,
-              title,
-              body,
-              dataType: notificationType,
-              recipientUserId: debtorId,
-              requesterName: requestInfo.requester_username,
-              amount,
-              currency,
-              eventName: requestInfo.event_name,
-              messageData: pushMessage.data
-            });
-            
-            const chunks = expo.chunkPushNotifications([pushMessage]);
-            let notificationSent = false;
-            
-            for (const chunk of chunks) {
-              try {
-                const tickets = await expo.sendPushNotificationsAsync(chunk);
-                console.log(`✅ Push notification sent for request to user ${debtorId}. Tickets:`, tickets);
-                
-                // Vérifier s'il y a des erreurs dans les tickets
-                const errors = tickets.filter(ticket => ticket.status === 'error');
-                if (errors.length > 0) {
-                  console.error('❌ Push notification errors:', errors);
-                } else {
-                  notificationSent = true;
-                  console.log('✅ REIMBURSEMENT REQUEST notification successfully sent to user:', debtorId);
-                }
-              } catch (pushError) {
-                console.error('❌ Error sending push notification chunk:', pushError);
-              }
-            }
-            
-            // Log final pour confirmer l'envoi
-            console.log(`📤 REIMBURSEMENT REQUEST notification final status: ${notificationSent ? 'SENT' : 'FAILED'} for user ${debtorId}`);
-            
-          } else {
-            console.log(`❌ Invalid or missing Expo push token for user: ${debtorId}, Token: ${recipientToken}`);
-          }
-        } else {
-          console.log(`ℹ️ No device token found for user: ${debtorId}`);
-        }
-      } catch (tokenError) {
-        console.error('❌ Error fetching device token or sending push notification:', tokenError);
-      }
-      
     } catch (notificationError) {
-      console.error(`❌ Error creating/sending request notification:`, notificationError);
-      // Ne pas faire échouer la requête principale si la notification échoue
+      console.error('Error creating notification:', notificationError);
     }
     
-    res.status(201).json({ 
-      id: result.insertId,
-      success: true, 
-      message: 'Reimbursement request created successfully' 
-    });
+    res.status(201).json({ message: 'Reimbursement request created successfully' });
   } catch (error) {
     console.error('Error creating reimbursement request:', error);
-    res.status(500).json({ error: 'Server error while creating reimbursement request' });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
